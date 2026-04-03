@@ -1,0 +1,10 @@
+# Only add direct dependencies to this file.
+# Some libraries (e.g. bleak) need different transitive dependencies per platform.
+bleak==0.21.1
+numba==0.58.1
+numpy==1.26.2
+PyQt6==6.6.0
+pyquaternion==0.9.9
+vispy==0.14.1
+opencv-contrib-python==4.8.1.78
+scipy==1.11.4
