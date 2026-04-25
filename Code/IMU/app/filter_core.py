@@ -16,8 +16,9 @@ i_vel = np.array([10, 11, 12])
 i_acc = np.array([13, 14, 15])
 i_accbias = np.array([16, 17, 18])
 i_gyrobias = np.array([19, 20, 21])
+i_magbias = np.array([22, 23, 24])
 
-STATE_SIZE = 22
+STATE_SIZE = 25
 DEFAULT_GRAVITY_VECTOR = np.array([0, 0, 9.81], dtype=np.float64)
 # GRAVITY_VECTOR points UP in the world frame because the accelerometer
 # measures the normal force pushing the stylus UP against gravity.
@@ -44,6 +45,7 @@ class HistoryItem(NamedTuple):
     predicted_statecov: Mat
     accel: Optional[Mat] = None
     gyro: Optional[Mat] = None
+    mag: Optional[Mat] = None
 
 
 @njit(cache=True)
@@ -72,6 +74,7 @@ def state_transition(state: Mat = np.array([])):
     statedot[i_acc] = 0
     statedot[i_accbias] = 0
     statedot[i_gyrobias] = 0
+    statedot[i_magbias] = 0
     return statedot
 
 
@@ -200,6 +203,54 @@ def imu_measurement(state: Mat, gravity_vector: Mat = DEFAULT_GRAVITY_VECTOR):
 
 
 @njit(cache=True)
+def mag_measurement(state: Mat, magnetic_field_vector: Mat):
+    quat = state[i_quat]
+    q0, q1, q2, q3 = quat
+    mx, my, mz = magnetic_field_vector
+    magbias = state[i_magbias]
+
+    m_mag = np.array(
+        [
+            mx * (2 * q0**2 + 2 * q1**2 - 1)
+            + my * (2 * q0 * q3 + 2 * q1 * q2)
+            - mz * (2 * q0 * q2 - 2 * q1 * q3)
+            + magbias[0],
+            my * (2 * q0**2 + 2 * q2**2 - 1)
+            - mx * (2 * q0 * q3 - 2 * q1 * q2)
+            + mz * (2 * q0 * q1 + 2 * q2 * q3)
+            + magbias[1],
+            mz * (2 * q0**2 + 2 * q3**2 - 1)
+            + mx * (2 * q0 * q2 + 2 * q1 * q3)
+            - my * (2 * q0 * q1 - 2 * q2 * q3)
+            + magbias[2],
+        ]
+    )
+
+    mj_mag = np.zeros((3, len(state)))
+    mj_mag[0, i_quat] = [
+        4 * q0 * mx + 2 * q3 * my - 2 * q2 * mz,
+        4 * q1 * mx + 2 * q2 * my + 2 * q3 * mz,
+        2 * q1 * my - 2 * q0 * mz,
+        2 * q0 * my + 2 * q1 * mz,
+    ]
+    mj_mag[1, i_quat] = [
+        -2 * q3 * mx + 4 * q0 * my + 2 * q1 * mz,
+        2 * q2 * mx + 2 * q0 * mz,
+        2 * q1 * mx + 4 * q2 * my + 2 * q3 * mz,
+        -2 * q0 * mx + 2 * q2 * mz,
+    ]
+    mj_mag[2, i_quat] = [
+        2 * q2 * mx - 2 * q1 * my + 4 * q0 * mz,
+        2 * q3 * mx - 2 * q0 * my,
+        2 * q0 * mx + 2 * q3 * my,
+        2 * q1 * mx + 2 * q2 * my + 4 * q3 * mz,
+    ]
+    mj_mag[:, i_magbias] = np.eye(3)
+
+    return (m_mag, mj_mag)
+
+
+@njit(cache=True)
 def camera_measurement(state: Mat):
     """
     Decoupled camera measurement model.
@@ -255,13 +306,15 @@ def ekf_correct(x: Mat, P: Mat, h: Mat, H: Mat, z: Mat, R: Mat):
     return x2, P2
 
 
-@njit(cache=True)
 def fuse_imu(
     fs: FilterState,
     accel: np.ndarray,
     gyro: np.ndarray,
     meas_noise: np.ndarray,
     gravity_vector: Mat = DEFAULT_GRAVITY_VECTOR,
+    mag: np.ndarray = np.empty(0, dtype=np.float64),
+    mag_noise: np.ndarray = np.empty((0, 0), dtype=np.float64),
+    magnetic_field_vector: Mat = np.empty(0, dtype=np.float64),
 ):
     h, H = imu_measurement(fs.state, gravity_vector)
     # Correct mapping for Dodeca-pen to Camera Frame:
@@ -279,8 +332,21 @@ def fuse_imu(
     # is handled by the initial orientation.
     accel2 = accel
     gyro2 = gyro
-    z = np.concatenate((accel2, gyro2))  # actual measurement
-    state, statecov = ekf_correct(fs.state, fs.statecov, h, H, z, meas_noise)
+    z = np.concatenate((accel2, gyro2))
+    R = meas_noise
+
+    if mag.size == 3 and mag_noise.shape[0] == 3 and magnetic_field_vector.size == 3:
+        h_mag, H_mag = mag_measurement(fs.state, magnetic_field_vector)
+        h = np.concatenate((h, h_mag))
+        H = np.vstack((H, H_mag))
+        z = np.concatenate((z, mag))
+
+        R_combined = np.zeros((9, 9), dtype=np.float64)
+        R_combined[0:6, 0:6] = meas_noise
+        R_combined[6:9, 6:9] = mag_noise
+        R = R_combined
+
+    state, statecov = ekf_correct(fs.state, fs.statecov, h, H, z, R)
     state[i_quat] = repair_quaternion(state[i_quat])
     return FilterState(state, statecov)
 

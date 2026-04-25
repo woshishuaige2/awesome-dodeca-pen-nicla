@@ -153,6 +153,7 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
     q_diag[fc.i_acc] = 0.01     # LOW acceleration noise to fight gravity leakage
     q_diag[fc.i_accbias] = 1e-6
     q_diag[fc.i_gyrobias] = 1e-7
+    q_diag[fc.i_magbias] = 1e-4
     filter_mod.Q = np.diag(q_diag)
     
     imu_alignment, gravity_camera = _resolve_imu_alignment(imu_readings, cv_readings, calibration_path)
@@ -166,7 +167,8 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
             imu_dt = None if previous_imu_ts is None else (ts - previous_imu_ts)
             _update_filter_dt(filter, imu_dt, dt)
             sr = StylusReading.from_json(reading)
-            filter.update_imu(imu_alignment @ sr.accel, imu_alignment @ sr.gyro)
+            mag = None if sr.mag is None else imu_alignment @ sr.mag
+            filter.update_imu(imu_alignment @ sr.accel, imu_alignment @ sr.gyro, mag)
             previous_imu_ts = ts
             
             # If we haven't seen CV yet, we can't initialize position

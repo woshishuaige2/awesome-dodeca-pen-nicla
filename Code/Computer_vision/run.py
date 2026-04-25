@@ -31,6 +31,33 @@ smoothed_pen_tip_position: np.ndarray | None = None
 # >>> shutdown flag for graceful termination <<<
 cv_shutdown_requested: bool = False
 
+
+def _normalize(vec: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(vec))
+    if norm < 1e-9:
+        return vec.copy()
+    return vec / norm
+
+
+def _make_pen_aligned_rotation(center_to_tip_body: np.ndarray) -> np.ndarray:
+    """
+    Build a fixed pen-frame-in-body rotation whose +Y axis points from the
+    dodecahedron center toward the pen tip.
+    """
+    y_axis = _normalize(center_to_tip_body)
+
+    # Reuse a body-frame reference axis to keep the pen frame stable.
+    reference = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    if abs(float(np.dot(reference, y_axis))) > 0.9:
+        reference = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+    x_axis = reference - float(np.dot(reference, y_axis)) * y_axis
+    x_axis = _normalize(x_axis)
+    z_axis = _normalize(np.cross(x_axis, y_axis))
+    x_axis = _normalize(np.cross(y_axis, z_axis))
+
+    return np.column_stack((x_axis, y_axis, z_axis))
+
 def _publish_pose(obj_1x12: np.ndarray) -> None:
     """Make the latest pose visible to dodeca_bridge in-process."""
     global object_pose
@@ -166,7 +193,9 @@ def start(headless: bool = True, cam_index: int = 0, video_file: str = None) -> 
     # Load DodecaPen calibration and params
     ddc_text_data = dodecapen.txt_data()
     ddc_params    = dodecapen.parameters()
-    tip_loc_cent  = np.array([0.15100563, 137.52252061, -82.07403558, 1]).reshape(4, 1)
+    tip_offset_body = np.array([0.15100563, 137.52252061, -82.07403558], dtype=np.float64)
+    tip_loc_cent  = np.append(tip_offset_body, 1.0).reshape(4, 1)
+    body_to_pen_rotation = _make_pen_aligned_rotation(tip_offset_body)
     post = 1
 
     frames, dets = 0, 0
@@ -207,11 +236,49 @@ def start(headless: bool = True, cam_index: int = 0, video_file: str = None) -> 
                     dets += 1
 
                     if not headless and (frames % 5) != 0:
-                        # Draw coordinate axes
+                        # Draw the raw dodecahedron frame at the center.
                         rvec, _ = cv2.Rodrigues(R)
                         cv2.drawFrameAxes(
                             rgb, ddc_params.mtx, ddc_params.dist,
                             rvec.reshape(3, 1), t.reshape(3, 1), 20
+                        )
+
+                        # Draw a pen-aligned frame at the dodeca center so one
+                        # axis follows the shaft direction without projecting
+                        # the axis origin off-screen near the tip.
+                        pen_rotation_cam = R @ body_to_pen_rotation
+                        pen_rvec, _ = cv2.Rodrigues(pen_rotation_cam)
+                        tip_pos_cam = t + R @ tip_offset_body
+                        cv2.drawFrameAxes(
+                            rgb, ddc_params.mtx, ddc_params.dist,
+                            pen_rvec.reshape(3, 1), t.reshape(3, 1), 12
+                        )
+
+                        center_px, _ = cv2.projectPoints(
+                            t.reshape(1, 1, 3),
+                            np.zeros((3, 1)),
+                            np.zeros((3, 1)),
+                            ddc_params.mtx,
+                            ddc_params.dist,
+                        )
+                        tip_px, _ = cv2.projectPoints(
+                            tip_pos_cam.reshape(1, 1, 3),
+                            np.zeros((3, 1)),
+                            np.zeros((3, 1)),
+                            ddc_params.mtx,
+                            ddc_params.dist,
+                        )
+                        cxy = tuple(np.round(center_px[0, 0]).astype(int))
+                        txy = tuple(np.round(tip_px[0, 0]).astype(int))
+                        cv2.line(rgb, cxy, txy, (0, 255, 255), 3)
+                        cv2.putText(
+                            rgb,
+                            "Pen axis",
+                            (cxy[0] + 10, cxy[1] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 255),
+                            2,
                         )
 
             # Display / performance logging

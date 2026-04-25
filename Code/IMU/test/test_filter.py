@@ -1,32 +1,33 @@
 from approvaltests.approvals import verify
 import numpy as np
-from filter import (
-    initial_state,
+
+from app.filter import initial_state
+from app.filter_core import (
+    FilterState,
+    STATE_SIZE,
+    camera_measurement,
+    imu_measurement,
+    i_acc,
+    i_av,
+    i_pos,
+    i_quat,
+    i_vel,
     state_transition,
     state_transition_jacobian,
-    imu_measurement,
-    camera_measurement,
-    i_vel,
-    i_quat,
-    i_pos,
-    i_av,
-    i_acc,
-    state_size,
-    FilterState,
 )
 
 
 def initial_state_for_tests():
-    state = np.zeros(state_size, dtype=np.float64)
+    state = np.zeros(STATE_SIZE, dtype=np.float64)
     state[i_quat] = [1, 0, 0, 0]
-    statecov = np.eye(state_size) * 0.01
+    statecov = np.eye(STATE_SIZE) * 0.01
     return FilterState(state, statecov)
 
 
 def test_initial_state():
     fs = initial_state()
-    assert len(fs.state) == 22
-    assert fs.statecov.shape == (22, 22)
+    assert len(fs.state) == STATE_SIZE
+    assert fs.statecov.shape == (STATE_SIZE, STATE_SIZE)
 
 
 def test_state_transition_jacobian():

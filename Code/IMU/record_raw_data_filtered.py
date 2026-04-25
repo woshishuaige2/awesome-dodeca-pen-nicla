@@ -59,6 +59,7 @@ class RawDataRecorder:
                     reading_dict = {
                         "accel": reading.accel.tolist(),
                         "gyro": reading.gyro.tolist(),
+                        "mag": None if reading.mag is None else reading.mag.tolist(),
                         "t": reading.t,
                         "pressure": reading.pressure
                     }

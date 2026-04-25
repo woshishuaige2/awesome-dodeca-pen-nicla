@@ -19,6 +19,7 @@ from app.filter_core import (
     i_accbias,
     i_av,
     i_gyrobias,
+    i_magbias,
     i_pos,
     i_quat,
     i_vel,
@@ -35,11 +36,13 @@ additive_noise[i_av] = 50
 additive_noise[i_quat] = 1e-5
 additive_noise[i_accbias] = 0.5e-4
 additive_noise[i_gyrobias] = 1e-5
+additive_noise[i_magbias] = 1e-3
 Q = np.diag(additive_noise)
 
 accel_noise = 2e-3
 gyro_noise = 5e-4
 imu_noise = np.diag([accel_noise] * 3 + [gyro_noise] * 3)
+mag_noise = np.diag([25.0] * 3)
 # >>> MODIFICATION: Optimized noise for EKF performance <<<
 # We make camera noise small so the filter trusts the high-quality offline CV
 camera_noise_pos = 1e-6 # High trust in CV position
@@ -57,6 +60,7 @@ additive_noise[i_av] = 1.0
 additive_noise[i_quat] = 1e-6
 additive_noise[i_accbias] = 1e-5
 additive_noise[i_gyrobias] = 1e-6
+additive_noise[i_magbias] = 1e-3
 Q = np.diag(additive_noise)
 
 
@@ -70,6 +74,7 @@ def initial_state(position=None, orientation=None):
     covdiag = np.ones(STATE_SIZE, dtype=np.float64) * 0.0001
     covdiag[i_accbias] = 1e-2
     covdiag[i_gyrobias] = 1e-4
+    covdiag[i_magbias] = 1e-1
     statecov = np.diag(covdiag)
     return FilterState(state, statecov)
 
@@ -115,6 +120,24 @@ def blend_new_data(old: np.ndarray, new: np.ndarray, alpha: float):
     return old * (1 - mix_factor) + new * mix_factor
 
 
+def normalize_vector(vector: np.ndarray | None) -> np.ndarray | None:
+    if vector is None:
+        return None
+    norm = np.linalg.norm(vector)
+    if norm < 1e-9:
+        return None
+    return np.asarray(vector, dtype=np.float64) / norm
+
+
+def as_float_vector(vector: np.ndarray | None) -> np.ndarray | None:
+    if vector is None:
+        return None
+    result = np.asarray(vector, dtype=np.float64)
+    if np.linalg.norm(result) < 1e-9:
+        return None
+    return result
+
+
 class DpointFilter:
     history: Deque[HistoryItem]
 
@@ -127,10 +150,41 @@ class DpointFilter:
         if gravity_vector is None:
             gravity_vector = DEFAULT_GRAVITY_VECTOR
         self.gravity_vector = np.asarray(gravity_vector, dtype=np.float64)
+        self.last_mag = None
+        self.magnetic_field_vector = None
 
-    def update_imu(self, accel: np.ndarray, gyro: np.ndarray):
+    def update_imu(self, accel: np.ndarray, gyro: np.ndarray, mag: np.ndarray | None = None):
         predicted = ekf_predict(self.fs, self.dt, Q)
-        self.fs = fuse_imu(predicted, accel, gyro, imu_noise, self.gravity_vector)
+        raw_mag = as_float_vector(mag)
+        if raw_mag is not None:
+            self.last_mag = raw_mag
+
+        magnetic_field_vector = (
+            np.empty(0, dtype=np.float64)
+            if self.magnetic_field_vector is None
+            else self.magnetic_field_vector
+        )
+        mag_argument = (
+            np.empty(0, dtype=np.float64)
+            if raw_mag is None
+            else raw_mag
+        )
+        mag_noise_argument = (
+            np.empty((0, 0), dtype=np.float64)
+            if raw_mag is None or self.magnetic_field_vector is None
+            else mag_noise
+        )
+
+        self.fs = fuse_imu(
+            predicted,
+            accel,
+            gyro,
+            imu_noise,
+            self.gravity_vector,
+            mag_argument,
+            mag_noise_argument,
+            magnetic_field_vector,
+        )
         self.history.append(
             HistoryItem(
                 self.fs.state,
@@ -139,6 +193,7 @@ class DpointFilter:
                 predicted.statecov,
                 accel=accel,
                 gyro=gyro,
+                mag=raw_mag,
             )
         )
         max_history_len = self.smoothing_length + self.camera_delay + 1
@@ -163,6 +218,17 @@ class DpointFilter:
         replay: Deque[HistoryItem] = deque()
         for _ in range(min(len(self.history) - 1, self.camera_delay)):
             replay.appendleft(self.history.pop())
+
+        if self.last_mag is not None:
+            magnetic_world = as_float_vector(orientation_mat @ self.last_mag)
+            if magnetic_world is not None:
+                if self.magnetic_field_vector is None:
+                    self.magnetic_field_vector = magnetic_world
+                else:
+                    blend = 0.05
+                    self.magnetic_field_vector = as_float_vector(
+                        (1 - blend) * self.magnetic_field_vector + blend * magnetic_world
+                    )
 
         # Fuse camera in its rightful place
         h = self.history[-1]
@@ -210,7 +276,7 @@ class DpointFilter:
         predicted_estimates = []
         for item in replay:
             if item.accel is not None and item.gyro is not None:
-                self.update_imu(item.accel, item.gyro)
+                self.update_imu(item.accel, item.gyro, item.mag)
             predicted_estimates.append(self.fs.state)
             
         return [

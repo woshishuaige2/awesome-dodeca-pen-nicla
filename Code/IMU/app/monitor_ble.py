@@ -11,24 +11,32 @@ import numpy as np
 class StylusReading(NamedTuple):
     accel: np.ndarray
     gyro: np.ndarray
+    mag: np.ndarray | None
     t: int  # Sensor timestamp in ms
     pressure: float
 
     def format_aligned(self):
-        return f"p={self.pressure:<8.5f}: |a|={np.linalg.norm(self.accel):<7.3f} a={self.accel}, g={self.gyro}"
+        mag_text = "None" if self.mag is None else f"{self.mag}"
+        return (
+            f"p={self.pressure:<8.5f}: |a|={np.linalg.norm(self.accel):<7.3f} "
+            f"a={self.accel}, g={self.gyro}, m={mag_text}"
+        )
     
     def to_json(self):
         return {
             "accel": self.accel.tolist(),
             "gyro": self.gyro.tolist(),
+            "mag": None if self.mag is None else self.mag.tolist(),
             "t": self.t,
             "pressure": self.pressure
         }
     
     def from_json(dict):
+        mag = dict.get("mag")
         return StylusReading(
             np.array(dict["accel"]),
             np.array(dict["gyro"]),
+            None if mag is None else np.array(mag),
             dict["t"],
             dict["pressure"]
         )
@@ -50,12 +58,27 @@ def calc_gyro(g):
     return g * 4.375 * (gyro_range / 125) / 1000
 
 
+def calc_mag(m):
+    """Magnetometer values are stored in raw sensor units until calibrated."""
+    return m.astype(np.float64)
+
+
 def unpack_imu_data_packet(data: bytearray, t_system_fallback: float = 0.0):
     """Unpacks an IMUDataPacket struct from the given data buffer."""
     # Legacy format: int16_t accel[3], gyro[3], uint16_t pressure (14 bytes)
     # Master clock format: int16_t accel[3], gyro[3], uint16_t pressure, uint32_t timestamp (18 bytes)
+    # Nicla mag format: int16_t accel[3], gyro[3], mag[3], uint16_t pressure (20 bytes)
+    # Nicla master clock format: int16_t accel[3], gyro[3], mag[3], uint16_t pressure, uint32_t timestamp (24 bytes)
     
-    if len(data) == 18:
+    mag = None
+    if len(data) == 24:
+        ax, ay, az, gx, gy, gz, mx, my, mz, pressure, t_sensor = struct.unpack("<9hHI", data)
+        mag = calc_mag(np.array([mx, my, mz], dtype=np.float64))
+    elif len(data) == 20:
+        ax, ay, az, gx, gy, gz, mx, my, mz, pressure = struct.unpack("<9hH", data)
+        t_sensor = int(t_system_fallback * 1000)
+        mag = calc_mag(np.array([mx, my, mz], dtype=np.float64))
+    elif len(data) == 18:
         # Master Clock format
         ax, ay, az, gx, gy, gz, pressure, t_sensor = struct.unpack("<3h3hHI", data)
     elif len(data) == 14:
@@ -67,7 +90,7 @@ def unpack_imu_data_packet(data: bytearray, t_system_fallback: float = 0.0):
 
     accel = calc_accel(np.array([ax, ay, az], dtype=np.float64) * 9.8)
     gyro = calc_gyro(np.array([gx, gy, gz], dtype=np.float64) * np.pi / 180.0)
-    return StylusReading(accel, gyro, t_sensor, pressure / 2**16)
+    return StylusReading(accel, gyro, mag, t_sensor, pressure / 2**16)
 
 
 # Global synchronization variables
@@ -102,9 +125,10 @@ async def monitor_ble_async(data_queue: mp.Queue, command_queue: mp.Queue):
                 # Pass arrival time for legacy fallback
                 reading = unpack_imu_data_packet(data, t_system_fallback=t_system_arrival)
                 
-                # Establish master clock offset on first valid packet
-                # Only do this for 18-byte packets (true master clock)
-                if sync_offset is None and len(data) == 18:
+                # Establish master clock offset on first valid packet.
+                # Timestamped packets are 18 bytes for the legacy format and
+                # 24 bytes for the Nicla mag-enabled format.
+                if sync_offset is None and len(data) in (18, 24):
                     with sync_lock:
                         if sync_offset is None:
                             t_sensor_sec = reading.t / 1000.0

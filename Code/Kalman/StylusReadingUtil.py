@@ -14,18 +14,21 @@ plot_process = None
 # Initialize data queues
 phi_queue = mp.Queue() 
 theta_queue = mp.Queue()
+yaw_queue = mp.Queue()
     
 def start_ble_process():
     global ble_process
     global plot_process
     
     ble_process = mp.Process(
-        target=monitor_ble, args=(ble_queue, ble_command_queue, phi_queue, theta_queue), daemon=False
+        target=monitor_ble,
+        args=(ble_queue, ble_command_queue, phi_queue, theta_queue, yaw_queue),
+        daemon=False
     )
     ble_process.start()
     print("BLE process started.")
     
-    plot_process = mp.Process(target=live_plot, args=(phi_queue, theta_queue))
+    plot_process = mp.Process(target=live_plot, args=(phi_queue, theta_queue, yaw_queue))
     plot_process.start()
     print("Plot process started.")
 
