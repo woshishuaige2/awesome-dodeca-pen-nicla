@@ -55,7 +55,11 @@ def _signed_permutation_matrices():
         for i, j in enumerate(perm):
             base[i, j] = 1.0
         for signs in __import__("itertools").product([-1.0, 1.0], repeat=3):
-            matrices.append(np.diag(signs) @ base)
+            candidate = np.diag(signs) @ base
+            # Keep only proper right-handed rotations. Reflections have
+            # determinant -1 and are rejected by scipy Rotation.from_matrix().
+            if np.linalg.det(candidate) > 0.0:
+                matrices.append(candidate)
     return matrices
 
 
