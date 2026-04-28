@@ -7,12 +7,11 @@ namespace {
 constexpr unsigned long kSampleIntervalMs = 7;
 constexpr float kSampleRateHz = 1000.0f / kSampleIntervalMs;
 constexpr uint32_t kSensorLatencyMs = 1;
+constexpr bool kPrintFusionDiagnostics = false;
+constexpr bool kEnableBleNotifications = true;
 
-constexpr uint16_t kAccelRangeG = 4;
-constexpr uint16_t kGyroRangeDps = 500;
-
-// Keep the BLE contract identical to the Xiao sketch so the Python tooling does
-// not need to change.
+// BLE service/characteristic UUIDs stay stable, but the payload now carries a
+// compact fused quaternion packet instead of raw IMU vectors.
 constexpr char kDeviceName[] = "DPOINT";
 constexpr char kServiceUuid[] = "19B10010-E8F2-537E-4F6C-D104768A1214";
 constexpr char kImuCharacteristicUuid[] = "19B10013-E8F2-537E-4F6C-D104768A1214";
@@ -27,40 +26,95 @@ constexpr char kImuCharacteristicUuid[] = "19B10013-E8F2-537E-4F6C-D104768A1214"
 constexpr int kPressureSensorPin = A0;
 constexpr int kPressureSensorPowerPin = -1;
 
-struct IMUDataPacket {
-  int16_t accel[3];
-  int16_t gyro[3];
-  int16_t mag[3];
+struct QuaternionDataPacket {
+  int16_t quat_wxyz[4];
   uint16_t pressure;
+  uint16_t reserved;
   uint32_t timestamp_ms;
 };
 
-#ifndef SENSOR_ID_ACC_PASS
-#define SENSOR_ID_ACC_PASS SENSOR_ID_ACC
-#endif
-
-#ifndef SENSOR_ID_GYRO_PASS
-#define SENSOR_ID_GYRO_PASS SENSOR_ID_GYRO
-#endif
-
-#ifndef SENSOR_ID_MAG_PASS
-#define SENSOR_ID_MAG_PASS SENSOR_ID_MAG
-#endif
+static_assert(sizeof(QuaternionDataPacket) == 16, "Unexpected QuaternionDataPacket size");
 
 BLEService stylusService(kServiceUuid);
 BLECharacteristic imuCharacteristic(
   kImuCharacteristicUuid,
   BLERead | BLENotify,
-  sizeof(IMUDataPacket)
+  sizeof(QuaternionDataPacket)
 );
 
-// Pass-through sensors are the closest match to the old sketch's direct raw
-// register reads from the LSM6DS3.
-SensorXYZ accelerometer(SENSOR_ID_ACC_PASS);
-SensorXYZ gyroscope(SENSOR_ID_GYRO_PASS);
-SensorXYZ magnetometer(SENSOR_ID_MAG_PASS);
+// The rotation vector uses the BHI260AP fusion output, which is the onboard
+// quaternion estimate we want to stream instead of raw accel integration.
+SensorQuaternion rotationVector(SENSOR_ID_RV);
 
 unsigned long nextSampleAtMs = 0;
+unsigned long diagnosticsWindowStartMs = 0;
+unsigned long lastQuatChangeAtMs = 0;
+uint32_t diagnosticsSentPacketCount = 0;
+uint32_t diagnosticsQuatChangeCount = 0;
+uint32_t diagnosticsRepeatedQuatCount = 0;
+uint32_t diagnosticsQuatChangeIntervalSumMs = 0;
+bool hasLastQuatPacket = false;
+int16_t lastQuatPacket[4] = {0, 0, 0, 0};
+
+int16_t quantizeQuaternionComponent(float value) {
+  const float clamped = constrain(value, -1.0f, 1.0f);
+  return static_cast<int16_t>(clamped * 32767.0f);
+}
+
+bool quaternionPacketChanged(const QuaternionDataPacket& packet) {
+  if (!hasLastQuatPacket) {
+    return true;
+  }
+  for (size_t i = 0; i < 4; ++i) {
+    if (packet.quat_wxyz[i] != lastQuatPacket[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void rememberQuaternionPacket(const QuaternionDataPacket& packet) {
+  for (size_t i = 0; i < 4; ++i) {
+    lastQuatPacket[i] = packet.quat_wxyz[i];
+  }
+  hasLastQuatPacket = true;
+}
+
+void printFusionDiagnosticsIfReady(unsigned long now) {
+  if (!kPrintFusionDiagnostics) {
+    return;
+  }
+  if (diagnosticsWindowStartMs == 0) {
+    diagnosticsWindowStartMs = now;
+    return;
+  }
+  if (now - diagnosticsWindowStartMs < 1000) {
+    return;
+  }
+
+  const unsigned long windowMs = now - diagnosticsWindowStartMs;
+  const float sentHz = diagnosticsSentPacketCount * 1000.0f / windowMs;
+  const float quatChangeHz = diagnosticsQuatChangeCount * 1000.0f / windowMs;
+  const float avgQuatChangeDtMs =
+    diagnosticsQuatChangeCount > 1
+      ? static_cast<float>(diagnosticsQuatChangeIntervalSumMs) / (diagnosticsQuatChangeCount - 1)
+      : 0.0f;
+
+  Serial.print("[Diag] sent_hz=");
+  Serial.print(sentHz, 2);
+  Serial.print(" quat_change_hz=");
+  Serial.print(quatChangeHz, 2);
+  Serial.print(" repeated_packets=");
+  Serial.print(diagnosticsRepeatedQuatCount);
+  Serial.print(" avg_quat_change_dt_ms=");
+  Serial.println(avgQuatChangeDtMs, 2);
+
+  diagnosticsWindowStartMs = now;
+  diagnosticsSentPacketCount = 0;
+  diagnosticsQuatChangeCount = 0;
+  diagnosticsRepeatedQuatCount = 0;
+  diagnosticsQuatChangeIntervalSumMs = 0;
+}
 
 void fatalBlink() {
   while (true) {
@@ -88,18 +142,10 @@ uint16_t readPressure() {
 }
 
 void configureImu() {
-#ifdef NICLA_STANDALONE
+  // We manage BLE ourselves in this sketch, so keep the BHY2 side in
+  // standalone mode and only enable the fused rotation vector output.
   BHY2.begin(NICLA_STANDALONE);
-#else
-  BHY2.begin();
-#endif
-
-  accelerometer.begin(kSampleRateHz, kSensorLatencyMs);
-  gyroscope.begin(kSampleRateHz, kSensorLatencyMs);
-  magnetometer.begin(kSampleRateHz, kSensorLatencyMs);
-
-  accelerometer.setRange(kAccelRangeG);
-  gyroscope.setRange(kGyroRangeDps);
+  rotationVector.begin(kSampleRateHz, kSensorLatencyMs);
 }
 
 void configureBle() {
@@ -115,13 +161,16 @@ void configureBle() {
   stylusService.addCharacteristic(imuCharacteristic);
   BLE.addService(stylusService);
 
-  const IMUDataPacket initialPacket = {};
+  const QuaternionDataPacket initialPacket = {};
   imuCharacteristic.writeValue(
     reinterpret_cast<const uint8_t*>(&initialPacket),
     sizeof(initialPacket)
   );
 
   BLE.advertise();
+  if (!kEnableBleNotifications) {
+    Serial.println("BLE notifications disabled for fusion-rate debug mode");
+  }
 }
 
 void sendPacketIfReady() {
@@ -133,23 +182,34 @@ void sendPacketIfReady() {
 
   BHY2.update();
 
-  IMUDataPacket packet = {};
-  packet.accel[0] = accelerometer.x();
-  packet.accel[1] = accelerometer.y();
-  packet.accel[2] = accelerometer.z();
-  packet.gyro[0] = gyroscope.x();
-  packet.gyro[1] = gyroscope.y();
-  packet.gyro[2] = gyroscope.z();
-  packet.mag[0] = magnetometer.x();
-  packet.mag[1] = magnetometer.y();
-  packet.mag[2] = magnetometer.z();
+  QuaternionDataPacket packet = {};
+  packet.quat_wxyz[0] = quantizeQuaternionComponent(rotationVector.w());
+  packet.quat_wxyz[1] = quantizeQuaternionComponent(rotationVector.x());
+  packet.quat_wxyz[2] = quantizeQuaternionComponent(rotationVector.y());
+  packet.quat_wxyz[3] = quantizeQuaternionComponent(rotationVector.z());
   packet.pressure = readPressure();
-  packet.timestamp_ms = millis();
+  packet.reserved = 0;
+  packet.timestamp_ms = now;
 
-  imuCharacteristic.writeValue(
-    reinterpret_cast<const uint8_t*>(&packet),
-    sizeof(packet)
-  );
+  diagnosticsSentPacketCount++;
+  if (quaternionPacketChanged(packet)) {
+    diagnosticsQuatChangeCount++;
+    if (lastQuatChangeAtMs != 0) {
+      diagnosticsQuatChangeIntervalSumMs += now - lastQuatChangeAtMs;
+    }
+    lastQuatChangeAtMs = now;
+    rememberQuaternionPacket(packet);
+  } else {
+    diagnosticsRepeatedQuatCount++;
+  }
+
+  if (kEnableBleNotifications) {
+    imuCharacteristic.writeValue(
+      reinterpret_cast<const uint8_t*>(&packet),
+      sizeof(packet)
+    );
+  }
+  printFusionDiagnosticsIfReady(now);
 }
 
 }  // namespace
@@ -167,6 +227,7 @@ void setup() {
   configureBle();
 
   nextSampleAtMs = millis();
+  diagnosticsWindowStartMs = nextSampleAtMs;
   Serial.println("Nicla stylus streamer ready");
 }
 

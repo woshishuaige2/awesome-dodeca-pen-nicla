@@ -46,6 +46,7 @@ class RawDataRecorder:
             }
         }
         self.should_stop = False
+        self._logged_first_format = False
         
     def record_imu(self, ble_queue):
         print("[Recorder] IMU recording started.")
@@ -57,15 +58,30 @@ class RawDataRecorder:
                     reading_dict = reading.to_json()
                 else:
                     reading_dict = {
-                        "accel": reading.accel.tolist(),
-                        "gyro": reading.gyro.tolist(),
+                        "accel": None if reading.accel is None else reading.accel.tolist(),
+                        "gyro": None if reading.gyro is None else reading.gyro.tolist(),
                         "mag": None if reading.mag is None else reading.mag.tolist(),
+                        "quat": None if reading.quat is None else reading.quat.tolist(),
                         "t": reading.t,
-                        "pressure": reading.pressure
+                        "pressure": reading.pressure,
+                        "aligned_host_time": reading.aligned_host_time,
                     }
                 # Store with absolute system timestamp for fallback/reference
-                reading_dict["local_timestamp"] = time.time()
+                reading_dict["local_timestamp"] = (
+                    reading.aligned_host_time
+                    if getattr(reading, "aligned_host_time", None) is not None
+                    else time.time()
+                )
                 self.data["imu_readings"].append(reading_dict)
+
+                if not self._logged_first_format:
+                    keys = sorted(reading_dict.keys())
+                    print(f"[Recorder] First IMU payload keys: {keys}")
+                    if reading_dict.get("quat") is not None:
+                        print("[Recorder] Detected quaternion BLE packet format.")
+                    else:
+                        print("[Recorder] Detected legacy raw-IMU BLE packet format.")
+                    self._logged_first_format = True
                 
                 # Update metadata if offset was just established
                 if not self.data["metadata"]["sync_info"]:
@@ -132,12 +148,18 @@ def main():
     ble_thread = threading.Thread(
         target=monitor_ble, 
         args=(ble_queue, ble_command_queue),
-        daemon=True
+        daemon=True,
+        name="ble-monitor",
     )
     ble_thread.start()
 
     # Start IMU recording thread
-    imu_rec_thread = threading.Thread(target=recorder.record_imu, args=(ble_queue,))
+    imu_rec_thread = threading.Thread(
+        target=recorder.record_imu,
+        args=(ble_queue,),
+        daemon=True,
+        name="imu-recorder",
+    )
     imu_rec_thread.start()
 
     print("\n=== Recording Started ===")
@@ -167,7 +189,8 @@ def main():
         
         # Cleanup
         ble_command_queue.put(StopCommand())
-        imu_rec_thread.join(timeout=1.0)
+        imu_rec_thread.join(timeout=2.0)
+        ble_thread.join(timeout=2.0)
         
         cap.release()
         video_out.release()
@@ -180,6 +203,13 @@ def main():
             
         recorder.save_imu()
         print(f"[Recorder] Video saved to {args.video}")
+
+        # Multiprocessing queues create feeder threads on Windows; closing and
+        # joining them avoids the process hanging after all visible work is done.
+        ble_queue.close()
+        ble_queue.join_thread()
+        ble_command_queue.close()
+        ble_command_queue.join_thread()
 
 if __name__ == "__main__":
     main()

@@ -15,6 +15,7 @@ from app.filter_core import (
     ekf_smooth,
     fuse_camera,
     fuse_imu,
+    fuse_quaternion,
     i_acc,
     i_accbias,
     i_av,
@@ -43,6 +44,7 @@ accel_noise = 2e-3
 gyro_noise = 5e-4
 imu_noise = np.diag([accel_noise] * 3 + [gyro_noise] * 3)
 mag_noise = np.diag([25.0] * 3)
+quat_noise = np.diag([2e-4] * 4)
 # >>> MODIFICATION: Optimized noise for EKF performance <<<
 # We make camera noise small so the filter trusts the high-quality offline CV
 camera_noise_pos = 1e-6 # High trust in CV position
@@ -152,6 +154,8 @@ class DpointFilter:
         self.gravity_vector = np.asarray(gravity_vector, dtype=np.float64)
         self.last_mag = None
         self.magnetic_field_vector = None
+        self.last_camera_position = None
+        self.last_camera_timestamp = None
 
     def update_imu(self, accel: np.ndarray, gyro: np.ndarray, mag: np.ndarray | None = None):
         predicted = ekf_predict(self.fs, self.dt, Q)
@@ -200,8 +204,56 @@ class DpointFilter:
         if len(self.history) > max_history_len:
             self.history.popleft()
 
+    def update_imu_quaternion(self, quat: np.ndarray):
+        predicted = ekf_predict(self.fs, self.dt, Q)
+        orientation_quat = normalize_vector(quat)
+        if orientation_quat is None:
+            return
+
+        aligned_quat, _ = nearest_quaternion(
+            predicted.state[i_quat], orientation_quat
+        )
+        self.fs = fuse_quaternion(predicted, aligned_quat, quat_noise)
+        self.history.append(
+            HistoryItem(
+                self.fs.state,
+                self.fs.statecov,
+                predicted.state,
+                predicted.statecov,
+                quat=aligned_quat,
+            )
+        )
+        max_history_len = self.smoothing_length + self.camera_delay + 1
+        if len(self.history) > max_history_len:
+            self.history.popleft()
+
+    def _update_velocity_from_camera(
+        self, imu_pos: np.ndarray, timestamp: float | None
+    ) -> None:
+        if timestamp is None:
+            return
+        if self.last_camera_position is None or self.last_camera_timestamp is None:
+            self.last_camera_position = imu_pos.copy()
+            self.last_camera_timestamp = timestamp
+            return
+
+        dt = timestamp - self.last_camera_timestamp
+        if dt <= 1e-6:
+            return
+
+        cv_velocity = (imu_pos - self.last_camera_position) / dt
+        blend = 0.35
+        self.fs.state[i_vel] = (1 - blend) * self.fs.state[i_vel] + blend * cv_velocity
+        self.last_camera_position = imu_pos.copy()
+        self.last_camera_timestamp = timestamp
+
+    def observe_camera_pose(
+        self, imu_pos: np.ndarray, timestamp: float | None
+    ) -> None:
+        self._update_velocity_from_camera(imu_pos, timestamp)
+
     def update_camera(
-        self, imu_pos: np.ndarray, orientation_mat: np.ndarray
+        self, imu_pos: np.ndarray, orientation_mat: np.ndarray, timestamp: float | None = None
     ) -> list[np.ndarray]:
         # >>> MODIFICATION: Support CV-only mode <<<
         # If no history (no IMU updates), we just update the state directly
@@ -210,6 +262,8 @@ class DpointFilter:
         if len(self.history) == 0:
             # Direct state update if no IMU data is present
             self.fs = initial_state(imu_pos, or_quat.elements)
+            self.last_camera_position = imu_pos.copy()
+            self.last_camera_timestamp = timestamp
             # We still need to predict to update the covariance
             self.fs = ekf_predict(self.fs, self.dt, Q)
             return [get_tip_pose(self.fs.state)[0]]
@@ -242,10 +296,13 @@ class DpointFilter:
         if pos_error > 0.5 or or_error > 1.0: 
             print(f"Resetting state, errors: pos={pos_error:.4f}m, or={or_error:.4f}rad")
             self.fs = initial_state(imu_pos, or_quat_smoothed)
+            self.last_camera_position = imu_pos.copy()
+            self.last_camera_timestamp = timestamp
             self.history = deque()
             return [get_tip_pose(self.fs.state)[0]]
             
         self.fs = fuse_camera(fs, imu_pos, or_quat_smoothed, camera_noise)
+        self._update_velocity_from_camera(imu_pos, timestamp)
         previous = self.history.pop()  # Replace last item
         self.history.append(
             HistoryItem(
@@ -275,7 +332,9 @@ class DpointFilter:
         # Replay the IMU measurements
         predicted_estimates = []
         for item in replay:
-            if item.accel is not None and item.gyro is not None:
+            if item.quat is not None:
+                self.update_imu_quaternion(item.quat)
+            elif item.accel is not None and item.gyro is not None:
                 self.update_imu(item.accel, item.gyro, item.mag)
             predicted_estimates.append(self.fs.state)
             

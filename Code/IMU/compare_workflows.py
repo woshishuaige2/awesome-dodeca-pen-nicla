@@ -25,6 +25,34 @@ import app.filter_core as fc
 DEFAULT_DT = 1.0 / 60.0
 
 
+def _rotation_matrix_to_quaternion(rotation_matrix):
+    return Quaternion(matrix=rotation_matrix).elements
+
+
+def _compute_camera_world_rotation(imu_quat, imu_to_body, camera_rotation):
+    """
+    Bridge the Nicla fused orientation frame into the camera frame.
+
+    Assumptions:
+    - imu_quat encodes IMU-frame -> fused-world rotation.
+    - imu_to_body maps IMU frame -> stylus body frame.
+    - camera_rotation maps body frame -> camera frame.
+
+    This bridge is only as accurate as the current imu_to_body calibration and
+    should be revisited after the CAD/mechanical update for the Nicla mount.
+    """
+    world_from_imu = Quaternion(imu_quat).rotation_matrix
+    world_from_body = world_from_imu @ imu_to_body.T
+    return camera_rotation @ world_from_body.T
+
+
+def _align_imu_quaternion_to_camera_frame(imu_quat, imu_to_body, camera_world_rotation):
+    world_from_imu = Quaternion(imu_quat).rotation_matrix
+    world_from_body = world_from_imu @ imu_to_body.T
+    camera_from_body = camera_world_rotation @ world_from_body
+    return _rotation_matrix_to_quaternion(camera_from_body)
+
+
 def _estimate_nominal_dt(imu_readings):
     """
     Estimate a stable IMU timestep from the positive timestamp deltas.
@@ -160,6 +188,9 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
     filter = DpointFilter(dt=dt, smoothing_length=15, camera_delay=5, gravity_vector=gravity_camera)
     trajectory = []
     previous_imu_ts = None
+    latest_imu_quat = None
+    last_cv_rotation = None
+    camera_world_rotation = None
 
     first_cv = True
     for i, (type, ts, reading) in enumerate(all_events):
@@ -167,8 +198,20 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
             imu_dt = None if previous_imu_ts is None else (ts - previous_imu_ts)
             _update_filter_dt(filter, imu_dt, dt)
             sr = StylusReading.from_json(reading)
-            mag = None if sr.mag is None else imu_alignment @ sr.mag
-            filter.update_imu(imu_alignment @ sr.accel, imu_alignment @ sr.gyro, mag)
+            if sr.quat is not None:
+                latest_imu_quat = sr.quat
+                if camera_world_rotation is None and last_cv_rotation is not None:
+                    camera_world_rotation = _compute_camera_world_rotation(
+                        sr.quat, imu_alignment, last_cv_rotation
+                    )
+                if camera_world_rotation is not None:
+                    aligned_quat = _align_imu_quaternion_to_camera_frame(
+                        sr.quat, imu_alignment, camera_world_rotation
+                    )
+                    filter.update_imu_quaternion(aligned_quat)
+            else:
+                mag = None if sr.mag is None else imu_alignment @ sr.mag
+                filter.update_imu(imu_alignment @ sr.accel, imu_alignment @ sr.gyro, mag)
             previous_imu_ts = ts
             
             # If we haven't seen CV yet, we can't initialize position
@@ -185,11 +228,18 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
             # CV reading contains dodecahedron center position
             center_pos = np.array(reading["center_pos_cam"])
             r_cam = np.array(reading["R_cam"])
+            last_cv_rotation = r_cam
             q_cam = Quaternion(matrix=r_cam).elements
             
             if first_cv:
                 # Initialize filter with first CV reading
                 filter.fs = fc.FilterState(initial_state(center_pos, q_cam).state, filter.fs.statecov)
+                filter.last_camera_position = center_pos.copy()
+                filter.last_camera_timestamp = ts
+                if latest_imu_quat is not None and camera_world_rotation is None:
+                    camera_world_rotation = _compute_camera_world_rotation(
+                        latest_imu_quat, imu_alignment, r_cam
+                    )
                 first_cv = False
                 # Append first point
                 tip = center_pos + r_cam @ CENTER_TO_TIP_BODY
@@ -199,12 +249,14 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
             if mode == "cv_only":
                 # CV-only: just use the center position directly
                 filter.fs = fc.FilterState(initial_state(center_pos, q_cam).state, filter.fs.statecov)
+                filter.observe_camera_pose(center_pos, ts)
                 # Calculate tip from center and rotation
                 tip = center_pos + r_cam @ CENTER_TO_TIP_BODY
                 trajectory.append({"t": ts, "x": tip[0], "y": tip[1], "z": tip[2]})
             elif mode == "standard":
                 # Standard mode uses the custom 7D fuse
                 filter.fs = standard_fuse_camera(filter.fs, center_pos, q_cam)
+                filter.observe_camera_pose(center_pos, ts)
                 # Add trajectory point after fusion
                 center = filter.fs.state[fc.i_pos]
                 q = Quaternion(filter.fs.state[fc.i_quat])
@@ -212,7 +264,7 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
                 trajectory.append({"t": ts, "x": tip[0], "y": tip[1], "z": tip[2]})
             else:
                 # Decoupled mode uses update_camera
-                filter.update_camera(center_pos, r_cam)
+                filter.update_camera(center_pos, r_cam, timestamp=ts)
                 # Add trajectory point after update
                 center = filter.fs.state[fc.i_pos]
                 q = Quaternion(filter.fs.state[fc.i_quat])
@@ -338,4 +390,4 @@ if __name__ == "__main__":
         if k in results:
             sorted_results[k] = results[k]
     
-    visualize(sorted_results, "./outputs/workflow_comparison.png")
+    visualize(sorted_results, str(Path(__file__).resolve().parent / "outputs" / "workflow_comparison.png"))

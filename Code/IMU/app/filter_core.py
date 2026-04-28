@@ -46,6 +46,7 @@ class HistoryItem(NamedTuple):
     accel: Optional[Mat] = None
     gyro: Optional[Mat] = None
     mag: Optional[Mat] = None
+    quat: Optional[Mat] = None
 
 
 @njit(cache=True)
@@ -265,6 +266,15 @@ def camera_measurement(state: Mat):
 
 
 @njit(cache=True)
+def quaternion_measurement(state: Mat):
+    quat = state[i_quat]
+    m_quat = quat
+    mj_quat = np.zeros((4, len(state)))
+    mj_quat[:, i_quat] = np.eye(4)
+    return (m_quat, mj_quat)
+
+
+@njit(cache=True)
 def repair_quaternion(q: Mat):
     # Note: we can't change the sign here, because it will affect the smoothing
     return q / np.linalg.norm(q)
@@ -372,6 +382,18 @@ def fuse_camera(
         R = meas_noise
         
     state, statecov = ekf_correct(fs.state, fs.statecov, h, H, z, R)
+    state[i_quat] = repair_quaternion(state[i_quat])
+    return FilterState(state, statecov)
+
+
+def fuse_quaternion(
+    fs: FilterState,
+    orientation_quat: np.ndarray,
+    quat_noise: np.ndarray,
+):
+    h, H = quaternion_measurement(fs.state)
+    z = orientation_quat.flatten()
+    state, statecov = ekf_correct(fs.state, fs.statecov, h, H, z, quat_noise)
     state[i_quat] = repair_quaternion(state[i_quat])
     return FilterState(state, statecov)
 
