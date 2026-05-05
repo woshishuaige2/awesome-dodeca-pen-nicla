@@ -36,6 +36,8 @@ def main():
     print(f"Observable axes: {result['observable_axes']}/3")
     print(f"Mean residual: {result['mean_residual']:.6f}")
     print(f"Max residual: {result['max_residual']:.6f}")
+    if result["method"] == "joint_quaternion_cv_fit":
+        print("(Quaternion residuals are rotation-vector magnitudes in radians.)")
     print("Rotation matrix:")
     print(np.array2string(result["rotation_matrix"], precision=6, suppress_small=True))
     print("Gravity in camera frame:")

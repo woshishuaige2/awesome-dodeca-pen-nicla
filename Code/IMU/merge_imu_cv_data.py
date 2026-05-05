@@ -11,6 +11,32 @@ import numpy as np
 import argparse
 
 
+def timestamp_stats(readings, timestamp_key="timestamp"):
+    """Return basic timing stats for a stream."""
+    timestamps = [
+        float(reading[timestamp_key])
+        for reading in readings
+        if timestamp_key in reading and reading[timestamp_key] is not None
+    ]
+    if len(timestamps) < 2:
+        return None
+
+    deltas = np.diff(np.asarray(timestamps, dtype=float))
+    duration = timestamps[-1] - timestamps[0]
+    if duration <= 0:
+        return None
+
+    return {
+        "duration": float(duration),
+        "mean_rate": float((len(timestamps) - 1) / duration),
+        "median_rate": float(1.0 / np.median(deltas)) if np.median(deltas) > 0 else 0.0,
+        "p95_gap": float(np.percentile(deltas, 95)),
+        "max_gap": float(np.max(deltas)),
+        "gaps_over_100ms": int(np.sum(deltas > 0.100)),
+        "gaps_over_200ms": int(np.sum(deltas > 0.200)),
+    }
+
+
 def load_json(file_path):
     """Load JSON file"""
     with open(file_path, 'r') as f:
@@ -237,12 +263,28 @@ def merge_data(imu_file, cv_file, output_file, sync_method="first_detection", ma
     print(f"CV readings: {len(aligned_cv)}")
     
     if aligned_imu and aligned_cv:
-        imu_duration = aligned_imu[-1]["timestamp"] - aligned_imu[0]["timestamp"]
-        cv_duration = aligned_cv[-1]["timestamp"] - aligned_cv[0]["timestamp"]
-        print(f"IMU duration: {imu_duration:.2f} seconds")
-        print(f"CV duration: {cv_duration:.2f} seconds")
-        print(f"IMU sample rate: {len(aligned_imu)/imu_duration:.1f} Hz")
-        print(f"CV sample rate: {len(aligned_cv)/cv_duration:.1f} Hz")
+        imu_stats = timestamp_stats(aligned_imu)
+        cv_stats = timestamp_stats(aligned_cv)
+        if imu_stats:
+            print(f"IMU duration: {imu_stats['duration']:.2f} seconds")
+            print(f"IMU mean sample rate: {imu_stats['mean_rate']:.1f} Hz")
+            print(f"IMU median sample rate: {imu_stats['median_rate']:.1f} Hz")
+            print(
+                f"IMU gaps: p95={imu_stats['p95_gap']*1000:.0f} ms, "
+                f"max={imu_stats['max_gap']*1000:.0f} ms, "
+                f">100ms={imu_stats['gaps_over_100ms']}, "
+                f">200ms={imu_stats['gaps_over_200ms']}"
+            )
+        if cv_stats:
+            print(f"CV duration: {cv_stats['duration']:.2f} seconds")
+            print(f"CV mean sample rate: {cv_stats['mean_rate']:.1f} Hz")
+            print(f"CV median sample rate: {cv_stats['median_rate']:.1f} Hz")
+            print(
+                f"CV gaps: p95={cv_stats['p95_gap']*1000:.0f} ms, "
+                f"max={cv_stats['max_gap']*1000:.0f} ms, "
+                f">100ms={cv_stats['gaps_over_100ms']}, "
+                f">200ms={cv_stats['gaps_over_200ms']}"
+            )
     
     print(f"\nOutput saved to: {output_file}")
     print("=" * 60)

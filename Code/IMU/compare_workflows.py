@@ -169,19 +169,12 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
     # Initialize Filter
     dt = _estimate_nominal_dt(imu_readings)
     
-    # FIX: Tuning noise parameters for both EKF modes.
-    # We need high process noise for position and velocity to follow CV accurately,
-    # but low noise for acceleration to prevent random drift when static.
+    # Tuning noise parameters for the reduced [quat, position, velocity] state.
     import app.filter as filter_mod
     q_diag = np.zeros(fc.STATE_SIZE)
     q_diag[fc.i_quat] = 1e-7   # Keep orientation stable
-    q_diag[fc.i_av] = 1e-4     # Low angular velocity noise
     q_diag[fc.i_pos] = 1.0      # High trust in CV position changes
     q_diag[fc.i_vel] = 1.0      # High trust in CV velocity changes
-    q_diag[fc.i_acc] = 0.01     # LOW acceleration noise to fight gravity leakage
-    q_diag[fc.i_accbias] = 1e-6
-    q_diag[fc.i_gyrobias] = 1e-7
-    q_diag[fc.i_magbias] = 1e-4
     filter_mod.Q = np.diag(q_diag)
     
     imu_alignment, gravity_camera = _resolve_imu_alignment(imu_readings, cv_readings, calibration_path)

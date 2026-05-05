@@ -17,6 +17,7 @@ class StylusReading(NamedTuple):
     t: int  # Sensor timestamp in ms
     pressure: float
     aligned_host_time: float | None = None
+    seq: int | None = None
 
     def format_aligned(self):
         if self.quat is not None:
@@ -31,6 +32,8 @@ class StylusReading(NamedTuple):
             "pressure": self.pressure,
             "aligned_host_time": self.aligned_host_time,
         }
+        if self.seq is not None:
+            payload["seq"] = self.seq
         if self.quat is not None:
             payload["quat"] = self.quat.tolist()
         if self.accel is not None:
@@ -131,7 +134,7 @@ def unpack_imu_data_packet(data: bytearray, t_system_fallback: float = 0.0):
 sync_offset = None  # t_host - t_sensor (in seconds)
 sync_lock = mp.Lock()
 offset_samples: list[float] = []
-OFFSET_SAMPLE_COUNT = 50
+OFFSET_SAMPLE_COUNT = 12
 
 
 def get_sync_offset():

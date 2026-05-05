@@ -6,12 +6,10 @@ from app.filter_core import (
     FilterState,
     STATE_SIZE,
     camera_measurement,
-    imu_measurement,
-    i_acc,
-    i_av,
     i_pos,
     i_quat,
     i_vel,
+    quaternion_measurement,
     state_transition,
     state_transition_jacobian,
 )
@@ -33,27 +31,25 @@ def test_initial_state():
 def test_state_transition_jacobian():
     fs = initial_state_for_tests()
     fs.state[i_vel] = [1, 2, 3]
-    fs.state[i_av] = [4, 5, 6]
-    fs.state[i_acc] = [7, 8, 9]
     jacobian = state_transition_jacobian(fs.state)
     verify(jacobian)
+    assert jacobian[i_pos[0], i_vel[0]] == 1
+    assert jacobian[i_pos[1], i_vel[1]] == 1
+    assert jacobian[i_pos[2], i_vel[2]] == 1
 
 
 def test_state_transition():
     fs = initial_state_for_tests()
     fs.state[i_vel] = [1, 2, 3]
-    fs.state[i_av] = [4, 5, 6]
-    fs.state[i_acc] = [7, 8, 9]
     st = state_transition(fs.state)
     verify(st)
+    np.testing.assert_allclose(st[i_pos], [1, 2, 3])
+    np.testing.assert_allclose(st[i_vel], [0, 0, 0])
 
 
-def test_imu_measurement():
+def test_quaternion_measurement():
     fs = initial_state_for_tests()
-    fs.state[i_vel] = [1, 2, 3]
-    fs.state[i_av] = [4, 5, 6]
-    fs.state[i_acc] = [7, 8, 9]
-    measurement = imu_measurement(fs.state)
+    measurement = quaternion_measurement(fs.state)
     verify(measurement)
 
 

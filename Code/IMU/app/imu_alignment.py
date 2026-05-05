@@ -48,6 +48,11 @@ def _rotation_matrix_to_wxyz(rotation_matrix):
     return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
 
 
+def _wxyz_to_rotation_matrix(quat):
+    quat = np.asarray(quat, dtype=float)
+    return R.from_quat([quat[1], quat[2], quat[3], quat[0]]).as_matrix()
+
+
 def _signed_permutation_matrices():
     matrices = []
     for perm in __import__("itertools").permutations(range(3)):
@@ -64,6 +69,92 @@ def _signed_permutation_matrices():
 
 
 SIGNED_PERMUTATION_MATRICES = _signed_permutation_matrices()
+
+
+def _mean_wxyz_quaternion(quaternions):
+    quats = np.asarray(quaternions, dtype=float)
+    if quats.ndim != 2 or quats.shape[1] != 4:
+        raise ValueError("Expected Nx4 quaternion array in [w, x, y, z] order")
+
+    reference = quats[0] / np.linalg.norm(quats[0])
+    aligned = []
+    for quat in quats:
+        quat = quat / np.linalg.norm(quat)
+        if float(np.dot(reference, quat)) < 0.0:
+            quat = -quat
+        aligned.append(quat)
+
+    xyzw = np.array([[q[1], q[2], q[3], q[0]] for q in aligned], dtype=float)
+    return R.from_quat(xyzw).mean().as_matrix()
+
+
+def _solve_quaternion_alignment(summaries):
+    """
+    Solve camera_from_body ~= camera_from_world @ world_from_imu @ body_from_imu.T.
+
+    The calibration output stores body_from_imu as rotation_matrix, matching the
+    existing compare_workflows convention for imu_to_body.
+    """
+    if len(summaries) < 2:
+        raise ValueError("Quaternion calibration needs at least two distinct stationary poses")
+
+    def residual(params):
+        camera_from_world = R.from_rotvec(params[:3]).as_matrix()
+        body_from_imu = R.from_rotvec(params[3:6]).as_matrix()
+        values = []
+        for summary in summaries:
+            predicted_camera_from_body = (
+                camera_from_world
+                @ summary["world_from_imu"]
+                @ body_from_imu.T
+            )
+            error = predicted_camera_from_body.T @ summary["camera_from_body"]
+            values.extend(R.from_matrix(error).as_rotvec() * np.sqrt(summary["weight"]))
+        return np.asarray(values, dtype=float)
+
+    best_fit = None
+    for initial_body_from_imu in SIGNED_PERMUTATION_MATRICES:
+        initial_camera_from_world = (
+            summaries[0]["camera_from_body"]
+            @ (summaries[0]["world_from_imu"] @ initial_body_from_imu.T).T
+        )
+        initial = np.concatenate(
+            (
+                R.from_matrix(initial_camera_from_world).as_rotvec(),
+                R.from_matrix(initial_body_from_imu).as_rotvec(),
+            )
+        )
+        result = least_squares(residual, initial, max_nfev=5000)
+        residual_norm = float(np.linalg.norm(residual(result.x)))
+        if best_fit is None or residual_norm < best_fit["residual_norm"]:
+            best_fit = {
+                "result": result,
+                "residual_norm": residual_norm,
+            }
+
+    result = best_fit["result"]
+    camera_from_world = R.from_rotvec(result.x[:3]).as_matrix()
+    body_from_imu = R.from_rotvec(result.x[3:6]).as_matrix()
+
+    per_recording_residuals = []
+    for summary in summaries:
+        predicted_camera_from_body = (
+            camera_from_world
+            @ summary["world_from_imu"]
+            @ body_from_imu.T
+        )
+        error = predicted_camera_from_body.T @ summary["camera_from_body"]
+        per_recording_residuals.append(float(np.linalg.norm(R.from_matrix(error).as_rotvec())))
+
+    return {
+        "rotation_matrix": body_from_imu,
+        "camera_from_world": camera_from_world,
+        "mean_residual": float(np.mean(per_recording_residuals)),
+        "max_residual": float(np.max(per_recording_residuals)),
+        "per_recording_residuals": per_recording_residuals,
+        "optimization_cost": float(best_fit["result"].cost),
+        "success": bool(best_fit["result"].success),
+    }
 
 
 def _solve_alignment_and_gravity(summaries, initial_rotation=None):
@@ -122,29 +213,34 @@ def summarize_stationary_recording(data):
     if not imu_readings or not cv_readings:
         raise ValueError("Recording must contain both IMU and CV readings")
 
-    accel = np.array([r["accel"] for r in imu_readings], dtype=float)
-    gyro = np.array([r["gyro"] for r in imu_readings], dtype=float)
     rotations = np.array([r["R_cam"] for r in cv_readings], dtype=float)
-
     mean_rotation = R.from_matrix(rotations).mean().as_matrix()
-    measured_accel = np.mean(accel, axis=0)
-
-    accel_std_norm = float(np.linalg.norm(np.std(accel, axis=0)))
-    gyro_std_norm = float(np.linalg.norm(np.std(gyro, axis=0)))
     center_std_norm = float(
         np.linalg.norm(np.std(np.array([r["center_pos_cam"] for r in cv_readings], dtype=float), axis=0))
     )
-    weight = 1.0 / max(accel_std_norm, 1e-6)
 
+    quat_readings = [r["quat"] for r in imu_readings if r.get("quat") is not None]
+    if not quat_readings:
+        raise ValueError(
+            "Calibration now requires quaternion IMU recordings. "
+            "Regenerate this pose with the quaternion BLE firmware."
+        )
+    if len(quat_readings) < 2:
+        raise ValueError("Quaternion calibration recording needs at least two quaternion samples")
+
+    world_from_imu = _mean_wxyz_quaternion(quat_readings)
+    rotation_vectors = R.from_matrix(
+        [_wxyz_to_rotation_matrix(q) for q in quat_readings]
+    ).as_rotvec()
+    quat_std_norm = float(np.linalg.norm(np.std(rotation_vectors, axis=0)))
     return {
         "imu_count": len(imu_readings),
         "cv_count": len(cv_readings),
-        "measured_accel": measured_accel,
-        "mean_rotation": mean_rotation,
-        "accel_std_norm": accel_std_norm,
-        "gyro_std_norm": gyro_std_norm,
+        "camera_from_body": mean_rotation,
+        "world_from_imu": world_from_imu,
+        "quat_std_norm": quat_std_norm,
         "center_std_norm": center_std_norm,
-        "weight": weight,
+        "weight": 1.0 / max(quat_std_norm, 1e-6),
     }
 
 
@@ -196,25 +292,17 @@ def estimate_alignment_from_recordings(recording_paths):
     if not summaries:
         raise ValueError("At least one recording is required for calibration")
 
-    measured = np.array([s["measured_accel"] for s in summaries], dtype=float)
-    best_fit = None
-    for initial_rotation in SIGNED_PERMUTATION_MATRICES:
-        fit = _solve_alignment_and_gravity(summaries, initial_rotation)
-        if best_fit is None or fit["mean_residual"] < best_fit["mean_residual"]:
-            best_fit = fit
-
+    best_fit = _solve_quaternion_alignment(summaries)
     rotation_matrix = best_fit["rotation_matrix"]
-    gravity_camera = best_fit["gravity_camera"]
     residual_norms = np.asarray(best_fit["per_recording_residuals"], dtype=float)
-    method = "joint_gravity_fit"
-    observable_axes = 2 if len(summaries) == 1 else 3
 
     return {
         "rotation_matrix": rotation_matrix,
-        "gravity_camera": gravity_camera,
+        "gravity_camera": fc.DEFAULT_GRAVITY_VECTOR.copy(),
         "quaternion_wxyz": _rotation_matrix_to_wxyz(rotation_matrix),
-        "method": method,
-        "observable_axes": observable_axes,
+        "camera_from_world": best_fit["camera_from_world"],
+        "method": "joint_quaternion_cv_fit",
+        "observable_axes": 3,
         "rmsd": float(best_fit["optimization_cost"]),
         "mean_residual": float(np.mean(residual_norms)),
         "max_residual": float(np.max(residual_norms)),
@@ -223,9 +311,7 @@ def estimate_alignment_from_recordings(recording_paths):
                 "path": s["path"],
                 "imu_count": s["imu_count"],
                 "cv_count": s["cv_count"],
-                "measured_accel": s["measured_accel"].tolist(),
-                "accel_std_norm": s["accel_std_norm"],
-                "gyro_std_norm": s["gyro_std_norm"],
+                "quat_std_norm": s["quat_std_norm"],
                 "center_std_norm": s["center_std_norm"],
                 "residual_norm": float(best_fit["per_recording_residuals"][idx]),
             }
@@ -249,6 +335,10 @@ def save_alignment_calibration(result, output_path):
         "max_residual": float(result.get("max_residual", 0.0)),
         "recordings": result.get("recordings", []),
     }
+    if "camera_from_world" in result:
+        payload["camera_from_world"] = np.asarray(
+            result["camera_from_world"], dtype=float
+        ).tolist()
     output_path.write_text(json.dumps(payload, indent=2))
 
 
@@ -264,5 +354,7 @@ def load_alignment_calibration(path=None):
         dtype=float,
     )
     payload["quaternion_wxyz"] = np.array(payload["quaternion_wxyz"], dtype=float)
+    if "camera_from_world" in payload:
+        payload["camera_from_world"] = np.array(payload["camera_from_world"], dtype=float)
     payload["path"] = str(calibration_path)
     return payload

@@ -1,79 +1,43 @@
 {
   "rotation_matrix": [
     [
-      -0.11289449289080294,
-      0.2873925915519161,
-      0.9511363371231287
+      0.0,
+      1.0,
+      0.0
     ],
     [
-      0.9355803485309876,
-      -0.2915933244388224,
-      0.19915507672502752
+      -1.0,
+      0.0,
+      0.0
     ],
     [
-      0.33458070015702396,
-      0.9123479771796447,
-      -0.23595958047650123
+      0.0,
+      0.0,
+      1.0
     ]
   ],
   "gravity_camera": [
-    -5.366427879228721,
-    3.4797430478448215,
-    7.607746797912694
+    0.0,
+    0.0,
+    9.81
   ],
   "quaternion_wxyz": [
-    0.2998135262933752,
-    0.5946970682676436,
-    0.5141159278140685,
-    0.540492422900896
+    -0.7071067811865475,
+    0.0,
+    0.0,
+    0.7071067811865475
   ],
-  "method": "joint_gravity_fit",
+  "method": "creo_parametric_transform_with_yz_axis_correction",
   "observable_axes": 3,
-  "rmsd": 1.6985436774828104,
-  "mean_residual": 0.2123137941860561,
-  "max_residual": 0.22768657892945465,
-  "recordings": [
-    {
-      "path": "outputs\\calib_pose_1.json",
-      "imu_count": 316,
-      "cv_count": 201,
-      "measured_accel": [
-        -2.4208100177215175,
-        -9.420355629113935,
-        1.1981009227848103
-      ],
-      "accel_std_norm": 0.04938821669783563,
-      "gyro_std_norm": 0.008276312969707147,
-      "center_std_norm": 0.0031923259178944594,
-      "residual_norm": 0.20029918492937188
-    },
-    {
-      "path": "outputs\\calib_pose_2.json",
-      "imu_count": 330,
-      "cv_count": 218,
-      "measured_accel": [
-        -0.6500114896969696,
-        -7.688135517575757,
-        -6.323589991515152
-      ],
-      "accel_std_norm": 0.029245612727143502,
-      "gyro_std_norm": 0.006507183405408881,
-      "center_std_norm": 0.00485311220015212,
-      "residual_norm": 0.20895561869934165
-    },
-    {
-      "path": "outputs\\calib_pose_3.json",
-      "imu_count": 402,
-      "cv_count": 205,
-      "measured_accel": [
-        -2.268288156218905,
-        -6.874735689552231,
-        -6.9279398895522455
-      ],
-      "accel_std_norm": 0.047484684550637826,
-      "gyro_std_norm": 0.010644657776765265,
-      "center_std_norm": 0.007750833012188451,
-      "residual_norm": 0.22768657892945465
-    }
-  ]
+  "source": {
+    "reference_from": "PRT_CSYS_DEF:F4(CSYS):NICLA_BOARD",
+    "reference_to": "DEFAULT_CSYS:F1(CSYS):06_DODECA_STYLUS_HALF",
+    "translation_ignored_mm": [
+      28.32,
+      11.4296,
+      0.0
+    ],
+    "axis_correction": "Applied a valid right-handed correction diag(1, -1, -1) for the true IMU axis convention relative to the Creo NICLA_BOARD frame.",
+    "note": "Only the rotation part is used for imu_to_body. A single-axis Z flip would be a reflection, so the Z sign correction is paired with Y to keep determinant +1."
+  }
 }

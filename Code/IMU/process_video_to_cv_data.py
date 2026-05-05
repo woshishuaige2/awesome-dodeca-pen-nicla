@@ -65,7 +65,7 @@ class OfflineCVProcessor:
         Args:
             video_start_timestamp: The absolute system timestamp when the video recording started.
             t_cv_start_system: The monotonic system timestamp when the video recording started.
-            sync_offset: The offset (t_sensor - t_system) established during recording.
+            sync_offset: The offset (t_system - t_sensor) established during recording.
         """
         print(f"[CV Processor] Opening video: {self.video_path}")
         cap = cv2.VideoCapture(str(self.video_path))
@@ -123,8 +123,9 @@ class OfflineCVProcessor:
                 
                 # Calculate timestamp based on frame number and FPS
                 if t_cv_start_system is not None and sync_offset is not None:
-                    # Master Clock domain: t_sensor = (t_cv_start_system + frame_index / fps) + offset
-                    frame_timestamp = (t_cv_start_system + (frame_count / fps)) + sync_offset
+                    # Master Clock domain. monitor_ble stores sync_offset as
+                    # t_system - t_sensor, so convert host time to sensor time.
+                    frame_timestamp = (t_cv_start_system + (frame_count / fps)) - sync_offset
                 else:
                     # Fallback to absolute system time
                     frame_timestamp = video_start_timestamp + (frame_count / fps)

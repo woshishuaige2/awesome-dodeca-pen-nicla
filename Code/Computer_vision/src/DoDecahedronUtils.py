@@ -510,7 +510,7 @@ class parameters():
 		self.aruco_params = aruco.DetectorParameters()
 		self.aruco_params.cornerRefinementMethod = 1
 		self.aruco_params.cornerRefinementMinAccuracy = 0.05
-		self.marker_size_in_mm = 12.5
+		self.marker_size_in_mm = 15.6
 		self.dilate_fac = 1.2 # dilate the square around the marker
 		self.padding_fac = 1.2 # padding around the aruco source image DO NOT CHANGE THIS PARAMETER
 		# with np.load('PTGREY.npz') as X: # Camera projection matrix and distortion coefficient, TODO: get from holoens
@@ -526,6 +526,7 @@ class parameters():
 class txt_data():
 	def __init__(self):
 		self.x = 0
+		self.marker_size_in_mm = 15.6
 		self.edge_pts_in_img_sp = [0]*13
 		self.aruco_images = [0]*13
 		self.aruco_images_int16 = [0]*13
@@ -536,7 +537,7 @@ class txt_data():
 			img_path  = ASSETS_DIR / "aruco_images_mip_maps" / f"res_75_{i}.jpg"
 			pixel_path = ASSETS_DIR / "thick_edge_coord_pixels" / f"id_{i}.txt"
 
-			self.edge_pts_in_img_sp[i] = np.loadtxt(edge_path, delimiter=",", dtype=np.float32) * 12.5 / 17.78
+			self.edge_pts_in_img_sp[i] = np.loadtxt(edge_path, delimiter=",", dtype=np.float32) * self.marker_size_in_mm / 17.78
 			self.aruco_images[i] = cv2.imread(str(img_path), 0)    # OpenCV needs string paths
 			self.img_pnts[i] = np.loadtxt(pixel_path, delimiter=",", dtype="int16")
 			self.aruco_images_int16[i] = np.int16(self.aruco_images[i])

@@ -3,11 +3,11 @@ import numpy as np
 from numpy import linalg as LA
 
 # default is 1 for the inner cube of length 2, scale it to make equal to your pentagon side 
-# this scale equal a dodecaheda of side d=13.2mm
+# this scale equal a dodecaheda of side d=16.24mm
 # scale_fac = d*cos(36)
-scale_fac = 10.679
+scale_fac = 13.138436
 # can be enlarged to a maximum 12.7
-marker_size_in_mm = 12.5
+marker_size_in_mm = 15.6
 #vertex coordinates
 v=[p for p in it.product((-1,1),(-1,1),(-1,1))]
 g=.5+.5*5**.5

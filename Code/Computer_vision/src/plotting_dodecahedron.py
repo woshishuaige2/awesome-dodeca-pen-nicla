@@ -6,8 +6,9 @@ from numpy import linalg as LA
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import matplotlib.pyplot as plt
 # from tempfile import TemporaryFile
-# default is 1, scale it to make equal to your pentagon side 
-scale_fac = 10.679 
+# default is 1, scale it to make equal to your pentagon side
+# scale_fac = d*cos(36), with d=16.24mm
+scale_fac = 13.138436
 #vertex coordinates
 v=[p for p in it.product((-1,1),(-1,1),(-1,1))]
 g=.5+.5*5**.5

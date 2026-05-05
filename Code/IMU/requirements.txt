@@ -5,6 +5,7 @@ numba==0.58.1
 numpy==1.26.2
 PyQt6==6.6.0
 pyquaternion==0.9.9
+pyserial==3.5
 vispy==0.14.1
 opencv-contrib-python==4.8.1.78
 scipy==1.11.4
