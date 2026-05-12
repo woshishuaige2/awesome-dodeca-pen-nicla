@@ -18,6 +18,7 @@ enum class TransportMode {
 
 constexpr TransportMode kTransportMode = TransportMode::UsbSerial;
 constexpr unsigned long kUsbBaudRate = 115200;
+constexpr uint16_t kAccelRangeG = 4;
 
 // BLE service/characteristic UUIDs stay stable, but the payload now carries a
 // compact fused quaternion packet instead of raw IMU vectors.
@@ -35,25 +36,27 @@ constexpr char kImuCharacteristicUuid[] = "19B10013-E8F2-537E-4F6C-D104768A1214"
 constexpr int kPressureSensorPin = A0;
 constexpr int kPressureSensorPowerPin = -1;
 
-struct QuaternionDataPacket {
+struct __attribute__((packed)) QuaternionAccelDataPacket {
   int16_t quat_wxyz[4];
+  int16_t accel[3];
   uint16_t pressure;
   uint16_t reserved;
   uint32_t timestamp_ms;
 };
 
-static_assert(sizeof(QuaternionDataPacket) == 16, "Unexpected QuaternionDataPacket size");
+static_assert(sizeof(QuaternionAccelDataPacket) == 22, "Unexpected QuaternionAccelDataPacket size");
 
 BLEService stylusService(kServiceUuid);
 BLECharacteristic imuCharacteristic(
   kImuCharacteristicUuid,
   BLERead | BLENotify,
-  sizeof(QuaternionDataPacket)
+  sizeof(QuaternionAccelDataPacket)
 );
 
 // The rotation vector uses the BHI260AP fusion output, which is the onboard
 // quaternion estimate we want to stream instead of raw accel integration.
 SensorQuaternion rotationVector(SENSOR_ID_RV);
+SensorXYZ accelerometer(SENSOR_ID_ACC);
 
 unsigned long nextSampleAtMs = 0;
 unsigned long diagnosticsWindowStartMs = 0;
@@ -82,7 +85,7 @@ int16_t quantizeQuaternionComponent(float value) {
   return static_cast<int16_t>(clamped * 32767.0f);
 }
 
-bool quaternionPacketChanged(const QuaternionDataPacket& packet) {
+bool quaternionPacketChanged(const QuaternionAccelDataPacket& packet) {
   if (!hasLastQuatPacket) {
     return true;
   }
@@ -94,7 +97,7 @@ bool quaternionPacketChanged(const QuaternionDataPacket& packet) {
   return false;
 }
 
-void rememberQuaternionPacket(const QuaternionDataPacket& packet) {
+void rememberQuaternionPacket(const QuaternionAccelDataPacket& packet) {
   for (size_t i = 0; i < 4; ++i) {
     lastQuatPacket[i] = packet.quat_wxyz[i];
   }
@@ -215,8 +218,12 @@ void configureImu() {
   // standalone mode and only enable the fused rotation vector output.
   BHY2.begin(NICLA_STANDALONE);
   const bool rotationStarted = rotationVector.begin(kSampleRateHz, kSensorLatencyMs);
+  const bool accelStarted = accelerometer.begin(kSampleRateHz, kSensorLatencyMs);
+  accelerometer.setRange(kAccelRangeG);
   Serial.print("rotation_vector_begin=");
   Serial.println(rotationStarted ? "true" : "false");
+  Serial.print("accelerometer_begin=");
+  Serial.println(accelStarted ? "true" : "false");
   SensorConfig config = rotationVector.getConfiguration();
   Serial.print("rotation_config sample_rate=");
   Serial.print(config.sample_rate, 2);
@@ -224,6 +231,13 @@ void configureImu() {
   Serial.print(config.latency);
   Serial.print(" range=");
   Serial.println(config.range);
+  SensorConfig accelConfig = accelerometer.getConfiguration();
+  Serial.print("accel_config sample_rate=");
+  Serial.print(accelConfig.sample_rate, 2);
+  Serial.print(" latency_ms=");
+  Serial.print(accelConfig.latency);
+  Serial.print(" range=");
+  Serial.println(accelConfig.range);
 }
 
 void configureBle() {
@@ -239,7 +253,7 @@ void configureBle() {
   stylusService.addCharacteristic(imuCharacteristic);
   BLE.addService(stylusService);
 
-  const QuaternionDataPacket initialPacket = {};
+  const QuaternionAccelDataPacket initialPacket = {};
   imuCharacteristic.writeValue(
     reinterpret_cast<const uint8_t*>(&initialPacket),
     sizeof(initialPacket)
@@ -251,7 +265,7 @@ void configureBle() {
   }
 }
 
-void writeUsbPacket(const QuaternionDataPacket& packet) {
+void writeUsbPacket(const QuaternionAccelDataPacket& packet) {
   const unsigned long startMs = millis();
   Serial.print("Q,");
   Serial.print(packet.reserved);
@@ -260,6 +274,10 @@ void writeUsbPacket(const QuaternionDataPacket& packet) {
   for (size_t i = 0; i < 4; ++i) {
     Serial.print(",");
     Serial.print(packet.quat_wxyz[i]);
+  }
+  for (size_t i = 0; i < 3; ++i) {
+    Serial.print(",");
+    Serial.print(packet.accel[i]);
   }
   Serial.print(",");
   Serial.println(packet.pressure);
@@ -277,11 +295,14 @@ void sendPacketIfReady() {
   const unsigned long sendStartMs = millis();
   nextSampleAtMs = now + kSampleIntervalMs;
 
-  QuaternionDataPacket packet = {};
+  QuaternionAccelDataPacket packet = {};
   packet.quat_wxyz[0] = quantizeQuaternionComponent(rotationVector.w());
   packet.quat_wxyz[1] = quantizeQuaternionComponent(rotationVector.x());
   packet.quat_wxyz[2] = quantizeQuaternionComponent(rotationVector.y());
   packet.quat_wxyz[3] = quantizeQuaternionComponent(rotationVector.z());
+  packet.accel[0] = accelerometer.x();
+  packet.accel[1] = accelerometer.y();
+  packet.accel[2] = accelerometer.z();
   packet.pressure = readPressure();
   packet.reserved = packetSequence++;
   packet.timestamp_ms = now;

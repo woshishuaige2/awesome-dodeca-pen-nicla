@@ -1,0 +1,48 @@
+{
+  "body_from_dodeca": [
+    [
+      -0.0399048,
+      0.849709,
+      -0.52574
+    ],
+    [
+      0.858952,
+      0.297989,
+      0.416419
+    ],
+    [
+      0.5105,
+      -0.434968,
+      -0.74175
+    ]
+  ],
+  "dodeca_from_body": [
+    [
+      -0.0399048,
+      0.858952,
+      0.5105
+    ],
+    [
+      0.849709,
+      0.297989,
+      -0.434968
+    ],
+    [
+      -0.52574,
+      0.416419,
+      -0.74175
+    ]
+  ],
+  "method": "creo_parametric_cv_coord_to_pen_body_transform",
+  "source": {
+    "reference_from": "CV_COORD:F19(CSYS)",
+    "reference_to": "PRT_CSYS_DEF:F4(CSYS):07_D_RING",
+    "translation_ignored_mm": [
+      -1.21235,
+      25.815,
+      -15.9725
+    ],
+    "body_axis_correction": "Applied right-handed axis remap [[0,-1,0],[-1,0,0],[0,0,-1]] to the displayed Creo rotation because the pen-body CSYS axis labels in the measurement were known to be uncertain. This remap gave the lowest cross-pose camera_from_world residual.",
+    "note": "Only the rotation part is used. The displayed Creo rotation was treated as dodeca_from_body before applying the body-axis correction; body_from_dodeca is the transpose of the corrected matrix."
+  }
+}

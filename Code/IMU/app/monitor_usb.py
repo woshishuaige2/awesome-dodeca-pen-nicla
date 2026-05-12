@@ -8,6 +8,7 @@ from app.monitor_ble import (
     StopCommand,
     StylusReading,
     align_reading_to_host_time,
+    calc_accel,
     calc_quat,
 )
 
@@ -37,21 +38,28 @@ def _parse_quaternion_line(line: str) -> StylusReading | None:
     """
     Parse USB serial packets emitted by the Nicla firmware:
     Q,<seq>,<timestamp_ms>,<qw>,<qx>,<qy>,<qz>,<pressure>
+    Q,<seq>,<timestamp_ms>,<qw>,<qx>,<qy>,<qz>,<ax>,<ay>,<az>,<pressure>
     """
     parts = line.strip().split(",")
-    if len(parts) != 8 or parts[0] != "Q":
+    if parts[0] != "Q" or len(parts) not in (8, 11):
         return None
 
     try:
         seq = int(parts[1])
         timestamp_ms = int(parts[2])
         quat_raw = np.array([int(value) for value in parts[3:7]], dtype=np.float64)
-        pressure = int(parts[7]) / 2**16
+        if len(parts) == 11:
+            accel_raw = np.array([int(value) for value in parts[7:10]], dtype=np.float64)
+            accel = calc_accel(accel_raw * 9.8)
+            pressure = int(parts[10]) / 2**16
+        else:
+            accel = None
+            pressure = int(parts[7]) / 2**16
     except ValueError:
         return None
 
     return StylusReading(
-        accel=None,
+        accel=accel,
         gyro=None,
         mag=None,
         quat=calc_quat(quat_raw),
@@ -100,12 +108,11 @@ def monitor_usb_serial(
                     continue
                 reading = align_reading_to_host_time(reading, t_system_arrival)
                 packet_count += 1
-                parts = line.strip().split(",")
-                seq = int(parts[1])
-                timestamp_ms = int(parts[2])
+                seq = reading.seq
+                timestamp_ms = reading.t
                 if packet_count <= 5:
                     print(f"[USB IMU] Packet {packet_count}: {line.strip()!r}")
-                if last_seq is not None:
+                if last_seq is not None and seq is not None:
                     seq_gap = (seq - last_seq) % 65536
                     timestamp_gap = timestamp_ms - last_timestamp_ms
                     if seq_gap != 1 or timestamp_gap > 100:

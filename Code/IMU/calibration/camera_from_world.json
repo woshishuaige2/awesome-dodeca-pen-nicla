@@ -1,0 +1,77 @@
+{
+  "camera_from_world": [
+    [
+      0.06746832867858824,
+      -0.982642965695681,
+      0.17280285470475865
+    ],
+    [
+      -0.03754213558339181,
+      -0.17557516765925463,
+      -0.9837499420875522
+    ],
+    [
+      0.9970148507826528,
+      0.059884576229781994,
+      -0.04873627856764634
+    ]
+  ],
+  "quaternion_wxyz": [
+    0.4591178722429805,
+    0.5682824506584488,
+    -0.44880195583068794,
+    0.5146286429098704
+  ],
+  "method": "stationary_cv_imu_rotation_average",
+  "imu_quat_convention": "world_from_imu",
+  "imu_to_body_path": "C:\\Users\\china\\Documents\\GitHub\\awesome-dodeca-pen-nicla\\Code\\IMU\\calibration\\imu_to_body.json",
+  "dodeca_body_path": "C:\\Users\\china\\Documents\\GitHub\\awesome-dodeca-pen-nicla\\Code\\IMU\\calibration\\dodeca_to_body.json",
+  "dodeca_body_method": "creo_parametric_cv_coord_to_pen_body_transform",
+  "max_pair_dt_ms": 40.0,
+  "sample_count": 658,
+  "mean_error_deg": 47.58430571664062,
+  "median_error_deg": 32.090422121025185,
+  "p95_error_deg": 96.70071204061905,
+  "max_error_deg": 97.3004651034927,
+  "recordings": [
+    {
+      "path": "outputs\\calib_pose_1.json",
+      "imu_count": 438,
+      "cv_count": 192,
+      "paired_count": 191,
+      "mean_pair_dt_ms": 3.93280977238232,
+      "max_pair_dt_ms": 14.499999954296072,
+      "camera_from_world_mean_error_deg": 1.5660494771213689,
+      "camera_from_world_p95_error_deg": 2.9122365080877177,
+      "camera_from_world_max_error_deg": 3.9495489272338475,
+      "cv_rotation_p95_error_deg": 2.9468474916400385,
+      "imu_rotation_p95_error_deg": 0.050675147093478805
+    },
+    {
+      "path": "outputs\\calib_pose_2.json",
+      "imu_count": 458,
+      "cv_count": 255,
+      "paired_count": 199,
+      "mean_pair_dt_ms": 3.9681742051452513,
+      "max_pair_dt_ms": 18.666666641365737,
+      "camera_from_world_mean_error_deg": 0.3019995667939503,
+      "camera_from_world_p95_error_deg": 0.5936242634665675,
+      "camera_from_world_max_error_deg": 2.0191660160640614,
+      "cv_rotation_p95_error_deg": 0.5945884970459087,
+      "imu_rotation_p95_error_deg": 0.02522571122172789
+    },
+    {
+      "path": "outputs\\calib_pose_3.json",
+      "imu_count": 691,
+      "cv_count": 269,
+      "paired_count": 268,
+      "mean_pair_dt_ms": 3.9962686571216324,
+      "max_pair_dt_ms": 31.83333335800853,
+      "camera_from_world_mean_error_deg": 2.1021947657717437,
+      "camera_from_world_p95_error_deg": 3.6555207102526,
+      "camera_from_world_max_error_deg": 4.256184872239743,
+      "cv_rotation_p95_error_deg": 3.657482480683029,
+      "imu_rotation_p95_error_deg": 0.018399620111709078
+    }
+  ]
+}

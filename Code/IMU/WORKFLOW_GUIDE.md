@@ -12,7 +12,8 @@ Separate recording from processing:
 1. **Record** IMU data + raw video (no CV processing)
 2. **Process** video offline using proven CV pipeline
 3. **Merge** IMU and CV data with proper synchronization
-4. **Analyze** using existing `compare_workflows.py`
+4. **Calibrate camera-to-world alignment** if the camera angle changed
+5. **Analyze** using existing `compare_workflows.py`
 
 ## New Workflow
 
@@ -73,26 +74,27 @@ python merge_imu_cv_data.py outputs/recording/imu_data.json outputs/recording/cv
 - `--sync first_detection` (default) - Align at first CV marker detection
 - `--sync manual --offset X.X` - Manual offset in seconds (CV - IMU)
 
-### Step 4: Calibrate IMU Axis Alignment
+### Step 4: Calibrate Fixed Camera-to-World Alignment
 
-Use one or more merged stationary recordings captured in clearly different pen orientations:
+For a fixed camera setup, estimate `camera_from_world` from one or more stationary merged recordings:
 
 ```bash
 cd Code/IMU
-python calibrate_imu_alignment.py outputs/calib_pose_1.json outputs/calib_pose_2.json outputs/calib_pose_3.json
+python calibrate_camera_world.py outputs/my_data.json
 ```
 
 **What it does:**
-- Estimates a fixed IMU-to-body rotation from stationary gravity observations
-- Saves the calibration to `calibration/imu_to_body.json`
-- Prints a warning if you only provide one pose, because that only constrains gravity alignment and not the full 3D yaw relationship
+- Pairs each CV frame with the nearest IMU quaternion
+- Computes `camera_from_world = R_cam @ world_from_body.T`
+- Averages the rotation estimates
+- Saves the calibration to `calibration/camera_from_world.json`
 
 **Recommended calibration data:**
-- Record `6 to 10` stationary batches
+- Record a few stationary batches
 - Hold each pose for `5 to 10 s`
 - Make the orientations clearly different
-- Keep the camera fixed during the calibration session and the validation run, because the calibration also estimates gravity in the camera frame
-- Treat large residuals as a bad calibration; low residuals mean the stationary poses agree under one rigid IMU-to-body transform
+- Keep the camera fixed after calibration
+- Recalibrate if the camera angle changes
 
 ### Step 5: Analyze Results
 
@@ -110,6 +112,10 @@ python compare_workflows.py outputs/my_data.json
   - Decoupled EKF (Proposed)
 - Saves visualization to `outputs/comparison.png`
 - Automatically loads `calibration/imu_to_body.json` if it exists
+- Automatically loads `calibration/dodeca_to_body.json` if it exists
+- Automatically loads `calibration/camera_from_world.json` if it exists
+
+Once this file exists, `compare_workflows.py` can use IMU orientation immediately without waiting for the first CV orientation to initialize `camera_from_world`.
 
 ## Complete Example
 
@@ -126,8 +132,8 @@ python process_video_to_cv_data.py outputs/recording/video.mp4 --output outputs/
 # Step 3: Merge data
 python merge_imu_cv_data.py outputs/recording/imu_data.json outputs/recording/cv_data.json --output outputs/my_data.json
 
-# Step 4: Calibrate IMU alignment
-python calibrate_imu_alignment.py outputs/calib_pose_1.json outputs/calib_pose_2.json outputs/calib_pose_3.json
+# Step 4: Calibrate fixed camera alignment
+python calibrate_camera_world.py outputs/my_data.json
 
 # Step 5: Analyze
 python compare_workflows.py outputs/my_data.json

@@ -21,7 +21,10 @@ class StylusReading(NamedTuple):
 
     def format_aligned(self):
         if self.quat is not None:
-            return f"p={self.pressure:<8.5f}: q={self.quat}, t={self.t}, host={self.aligned_host_time}"
+            accel_text = ""
+            if self.accel is not None:
+                accel_text = f" |a|={np.linalg.norm(self.accel):<7.3f} a={self.accel}"
+            return f"p={self.pressure:<8.5f}: q={self.quat}{accel_text}, t={self.t}, host={self.aligned_host_time}"
         mag_text = "None" if self.mag is None else f"{self.mag}"
         accel_norm = float(np.linalg.norm(self.accel)) if self.accel is not None else 0.0
         return f"p={self.pressure:<8.5f}: |a|={accel_norm:<7.3f} a={self.accel}, g={self.gyro}, m={mag_text}, host={self.aligned_host_time}"
@@ -58,6 +61,7 @@ class StylusReading(NamedTuple):
             payload["t"],
             payload["pressure"],
             payload.get("aligned_host_time"),
+            payload.get("seq"),
         )
 
 
@@ -95,6 +99,8 @@ def unpack_imu_data_packet(data: bytearray, t_system_fallback: float = 0.0):
     """Unpacks an IMUDataPacket struct from the given data buffer."""
     # Quaternion format: int16_t quat_wxyz[4], uint16_t pressure,
     # uint16_t reserved, uint32_t timestamp (16 bytes)
+    # Quaternion + accel format: int16_t quat_wxyz[4], accel[3],
+    # uint16_t pressure, uint16_t sequence, uint32_t timestamp (22 bytes)
     # Legacy format: int16_t accel[3], gyro[3], uint16_t pressure (14 bytes)
     # Master clock format: int16_t accel[3], gyro[3], uint16_t pressure, uint32_t timestamp (18 bytes)
     # Nicla mag format: int16_t accel[3], gyro[3], mag[3], uint16_t pressure (20 bytes)
@@ -104,7 +110,12 @@ def unpack_imu_data_packet(data: bytearray, t_system_fallback: float = 0.0):
     mag = None
     accel = None
     gyro = None
-    if len(data) == 16:
+    seq = None
+    if len(data) == 22:
+        qw, qx, qy, qz, ax, ay, az, pressure, seq, t_sensor = struct.unpack("<4h3hHHI", data)
+        quat = calc_quat(np.array([qw, qx, qy, qz], dtype=np.float64))
+        accel = calc_accel(np.array([ax, ay, az], dtype=np.float64) * 9.8)
+    elif len(data) == 16:
         qw, qx, qy, qz, pressure, _reserved, t_sensor = struct.unpack("<4hHHI", data)
         quat = calc_quat(np.array([qw, qx, qy, qz], dtype=np.float64))
     elif len(data) == 24:
@@ -127,7 +138,7 @@ def unpack_imu_data_packet(data: bytearray, t_system_fallback: float = 0.0):
     if quat is None:
         accel = calc_accel(np.array([ax, ay, az], dtype=np.float64) * 9.8)
         gyro = calc_gyro(np.array([gx, gy, gz], dtype=np.float64) * np.pi / 180.0)
-    return StylusReading(accel, gyro, mag, quat, t_sensor, pressure / 2**16)
+    return StylusReading(accel, gyro, mag, quat, t_sensor, pressure / 2**16, seq=seq)
 
 
 # Global synchronization variables

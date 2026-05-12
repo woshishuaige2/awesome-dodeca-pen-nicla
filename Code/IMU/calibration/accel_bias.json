@@ -1,0 +1,20 @@
+{
+  "bias": [
+    -0.06973753370185622,
+    -0.06461495064916689,
+    -0.022254345808086398
+  ],
+  "scale": 1.010868883994558,
+  "gravity_mps2": 9.80665,
+  "fitted_radius_mps2": 9.701208688161374,
+  "rms_residual_mps2": 0.023980818981772508,
+  "method": "six_pose_stationary_sphere_fit",
+  "recordings": [
+    "outputs/accel_bias_pose_1.json",
+    "outputs/accel_bias_pose_2.json",
+    "outputs/accel_bias_pose_3.json",
+    "outputs/accel_bias_pose_4.json",
+    "outputs/accel_bias_pose_5.json",
+    "outputs/accel_bias_pose_6.json"
+  ]
+}

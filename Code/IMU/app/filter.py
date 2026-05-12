@@ -121,8 +121,53 @@ class DpointFilter:
         self.gravity_vector = np.asarray(gravity_vector, dtype=np.float64)
         self.last_camera_position = None
         self.last_camera_timestamp = None
+        self.filtered_linear_accel = None
+        self.imu_velocity_bridge_min_gap = 0.08
+        self.imu_velocity_bridge_alpha = 0.25
+        self.imu_velocity_bridge_weight = 0.35
+        self.imu_velocity_bridge_damping = 0.998
 
-    def update_imu(self, accel: np.ndarray, gyro: np.ndarray, mag: np.ndarray | None = None):
+    def _apply_imu_velocity_bridge(
+        self,
+        accel_camera: np.ndarray | None,
+        timestamp: float | None,
+    ) -> None:
+        if accel_camera is None:
+            return
+        if timestamp is None or self.last_camera_timestamp is None:
+            return
+        if timestamp - self.last_camera_timestamp < self.imu_velocity_bridge_min_gap:
+            return
+
+        accel_camera = as_float_vector(accel_camera)
+        if accel_camera is None:
+            return
+
+        linear_accel = accel_camera - self.gravity_vector
+        if np.linalg.norm(linear_accel) > 50.0:
+            return
+
+        if self.filtered_linear_accel is None:
+            self.filtered_linear_accel = linear_accel
+        else:
+            alpha = self.imu_velocity_bridge_alpha
+            self.filtered_linear_accel = (
+                (1.0 - alpha) * self.filtered_linear_accel + alpha * linear_accel
+            )
+
+        old_velocity = self.fs.state[i_vel].copy()
+        imu_velocity = old_velocity + self.filtered_linear_accel * self.dt
+        weight = self.imu_velocity_bridge_weight
+        bridged_velocity = (1.0 - weight) * old_velocity + weight * imu_velocity
+        self.fs.state[i_vel] = self.imu_velocity_bridge_damping * bridged_velocity
+
+    def update_imu(
+        self,
+        accel: np.ndarray,
+        gyro: np.ndarray,
+        mag: np.ndarray | None = None,
+        timestamp: float | None = None,
+    ):
         """
         Legacy raw-IMU path retained for older recordings.
         The reduced 10D filter no longer estimates acceleration, angular velocity,
@@ -131,12 +176,14 @@ class DpointFilter:
         """
         predicted = ekf_predict(self.fs, self.dt, Q)
         self.fs = predicted
+        self._apply_imu_velocity_bridge(accel, timestamp)
         self.history.append(
             HistoryItem(
                 self.fs.state,
                 self.fs.statecov,
                 predicted.state,
                 predicted.statecov,
+                timestamp=timestamp,
                 accel=accel,
                 gyro=gyro,
                 mag=as_float_vector(mag),
@@ -146,7 +193,12 @@ class DpointFilter:
         if len(self.history) > max_history_len:
             self.history.popleft()
 
-    def update_imu_quaternion(self, quat: np.ndarray):
+    def update_imu_quaternion(
+        self,
+        quat: np.ndarray,
+        accel_camera: np.ndarray | None = None,
+        timestamp: float | None = None,
+    ):
         predicted = ekf_predict(self.fs, self.dt, Q)
         orientation_quat = normalize_vector(quat)
         if orientation_quat is None:
@@ -156,12 +208,15 @@ class DpointFilter:
             predicted.state[i_quat], orientation_quat
         )
         self.fs = fuse_quaternion(predicted, aligned_quat, quat_noise)
+        self._apply_imu_velocity_bridge(accel_camera, timestamp)
         self.history.append(
             HistoryItem(
                 self.fs.state,
                 self.fs.statecov,
                 predicted.state,
                 predicted.statecov,
+                timestamp=timestamp,
+                accel=as_float_vector(accel_camera),
                 quat=aligned_quat,
             )
         )
@@ -177,6 +232,7 @@ class DpointFilter:
         if self.last_camera_position is None or self.last_camera_timestamp is None:
             self.last_camera_position = imu_pos.copy()
             self.last_camera_timestamp = timestamp
+            self.filtered_linear_accel = None
             return
 
         dt = timestamp - self.last_camera_timestamp
@@ -188,6 +244,7 @@ class DpointFilter:
         self.fs.state[i_vel] = (1 - blend) * self.fs.state[i_vel] + blend * cv_velocity
         self.last_camera_position = imu_pos.copy()
         self.last_camera_timestamp = timestamp
+        self.filtered_linear_accel = None
 
     def observe_camera_pose(
         self, imu_pos: np.ndarray, timestamp: float | None
@@ -206,6 +263,7 @@ class DpointFilter:
             self.fs = initial_state(imu_pos, or_quat.elements)
             self.last_camera_position = imu_pos.copy()
             self.last_camera_timestamp = timestamp
+            self.filtered_linear_accel = None
             # We still need to predict to update the covariance
             self.fs = ekf_predict(self.fs, self.dt, Q)
             return [get_tip_pose(self.fs.state)[0]]
@@ -228,6 +286,7 @@ class DpointFilter:
             self.fs = initial_state(imu_pos, or_quat_smoothed)
             self.last_camera_position = imu_pos.copy()
             self.last_camera_timestamp = timestamp
+            self.filtered_linear_accel = None
             self.history = deque()
             return [get_tip_pose(self.fs.state)[0]]
             
@@ -263,9 +322,9 @@ class DpointFilter:
         predicted_estimates = []
         for item in replay:
             if item.quat is not None:
-                self.update_imu_quaternion(item.quat)
+                self.update_imu_quaternion(item.quat, item.accel, item.timestamp)
             elif item.accel is not None and item.gyro is not None:
-                self.update_imu(item.accel, item.gyro, item.mag)
+                self.update_imu(item.accel, item.gyro, item.mag, item.timestamp)
             predicted_estimates.append(self.fs.state)
             
         return [

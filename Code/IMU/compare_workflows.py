@@ -14,9 +14,17 @@ sys.path.append(str(repo_root / "IMU"))
 
 from app.filter import DpointFilter, initial_state
 from app.imu_alignment import (
+    DEFAULT_ACCEL_CALIBRATION_PATH,
     DEFAULT_ALIGNMENT_PATH,
+    correct_accel,
     estimate_alignment_from_streams,
+    load_accel_calibration,
     load_alignment_calibration,
+)
+from app.camera_world_calibration import (
+    DEFAULT_CAMERA_WORLD_PATH,
+    load_dodeca_body_calibration,
+    load_camera_world_calibration,
 )
 from app.monitor_ble import StylusReading
 from app.dodeca_bridge import CENTER_TO_TIP_BODY
@@ -27,6 +35,15 @@ DEFAULT_DT = 1.0 / 60.0
 
 def _rotation_matrix_to_quaternion(rotation_matrix):
     return Quaternion(matrix=rotation_matrix).elements
+
+
+def _world_from_imu_rotation(imu_quat, convention="world_from_imu"):
+    rotation = Quaternion(imu_quat).rotation_matrix
+    if convention == "world_from_imu":
+        return rotation
+    if convention == "imu_from_world":
+        return rotation.T
+    raise ValueError(f"Unknown IMU quaternion convention: {convention}")
 
 
 def _compute_camera_world_rotation(imu_quat, imu_to_body, camera_rotation):
@@ -41,16 +58,33 @@ def _compute_camera_world_rotation(imu_quat, imu_to_body, camera_rotation):
     This bridge is only as accurate as the current imu_to_body calibration and
     should be revisited after the CAD/mechanical update for the Nicla mount.
     """
-    world_from_imu = Quaternion(imu_quat).rotation_matrix
+    world_from_imu = _world_from_imu_rotation(imu_quat)
     world_from_body = world_from_imu @ imu_to_body.T
     return camera_rotation @ world_from_body.T
 
 
-def _align_imu_quaternion_to_camera_frame(imu_quat, imu_to_body, camera_world_rotation):
-    world_from_imu = Quaternion(imu_quat).rotation_matrix
+def _align_imu_quaternion_to_camera_frame(
+    imu_quat,
+    imu_to_body,
+    camera_world_rotation,
+    imu_quat_convention="world_from_imu",
+):
+    world_from_imu = _world_from_imu_rotation(imu_quat, imu_quat_convention)
     world_from_body = world_from_imu @ imu_to_body.T
     camera_from_body = camera_world_rotation @ world_from_body
     return _rotation_matrix_to_quaternion(camera_from_body)
+
+
+def _align_imu_accel_to_camera_frame(
+    imu_accel,
+    imu_quat,
+    camera_world_rotation,
+    imu_quat_convention="world_from_imu",
+):
+    if imu_accel is None or camera_world_rotation is None:
+        return None
+    world_from_imu = _world_from_imu_rotation(imu_quat, imu_quat_convention)
+    return camera_world_rotation @ world_from_imu @ np.asarray(imu_accel, dtype=float)
 
 
 def _estimate_nominal_dt(imu_readings):
@@ -118,7 +152,51 @@ def _resolve_imu_alignment(imu_readings, cv_readings, calibration_path=None):
     return calibration["rotation_matrix"], calibration["gravity_camera"]
 
 
-def run_workflow(input_file, mode="decoupled", calibration_path=None):
+def _resolve_camera_world_calibration(calibration_path=None):
+    candidate_paths = []
+    if calibration_path:
+        candidate_paths.append(Path(calibration_path))
+    candidate_paths.append(DEFAULT_CAMERA_WORLD_PATH)
+
+    seen_paths = set()
+    for path in candidate_paths:
+        if str(path) in seen_paths:
+            continue
+        seen_paths.add(str(path))
+        calibration = load_camera_world_calibration(path)
+        if calibration is not None:
+            print(
+                f"[Camera Align] Loaded calibration from {calibration['path']} "
+                f"(method={calibration['method']}, p95={calibration['p95_error_deg']:.3f} deg)"
+            )
+            return calibration
+
+    print(
+        "[Camera Align] No saved camera_from_world calibration found. "
+        "Using first overlapping CV/IMU pose to initialize it."
+    )
+    return None
+
+
+def _resolve_dodeca_body_calibration():
+    calibration = load_dodeca_body_calibration()
+    if calibration["path"] is None:
+        print("[Dodeca Align] No dodeca/body calibration found. Using identity.")
+    else:
+        print(
+            f"[Dodeca Align] Loaded calibration from {calibration['path']} "
+            f"(method={calibration['method']})"
+        )
+    return calibration
+
+
+def run_workflow(
+    input_file,
+    mode="decoupled",
+    calibration_path=None,
+    camera_world_calibration_path=None,
+    accel_calibration_path=None,
+):
     """
     Modes: 
     - 'cv_only': Only use CV updates, no IMU.
@@ -135,16 +213,16 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
     for cv_reading in cv_readings:
         if "imu_pos_cam" in cv_reading and "center_pos_cam" not in cv_reading:
             cv_reading["center_pos_cam"] = cv_reading["imu_pos_cam"]
-    
+
     all_events = []
-    
+
     if mode != "cv_only":
         for r in imu_readings:
             all_events.append(("IMU", r["local_timestamp"], r))
     
     for r in cv_readings:
         all_events.append(("CV", r["local_timestamp"], r))
-    
+
     all_events.sort(key=lambda x: x[1])
 
     # Configuration for different modes
@@ -178,12 +256,36 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
     filter_mod.Q = np.diag(q_diag)
     
     imu_alignment, gravity_camera = _resolve_imu_alignment(imu_readings, cv_readings, calibration_path)
+    dodeca_body_calibration = _resolve_dodeca_body_calibration()
+    dodeca_from_body = dodeca_body_calibration["dodeca_from_body"]
+    body_from_dodeca = dodeca_body_calibration["body_from_dodeca"]
+    center_to_tip_body = body_from_dodeca @ CENTER_TO_TIP_BODY
+    camera_world_calibration = _resolve_camera_world_calibration(
+        camera_world_calibration_path
+    )
+    if camera_world_calibration is None:
+        calibrated_camera_world_rotation = None
+        imu_quat_convention = "world_from_imu"
+    else:
+        calibrated_camera_world_rotation = camera_world_calibration["camera_from_world"]
+        imu_quat_convention = camera_world_calibration.get(
+            "imu_quat_convention",
+            "world_from_imu",
+        )
+    accel_calibration = load_accel_calibration(accel_calibration_path)
+    if accel_calibration["path"] is None:
+        print("[Accel Calib] No saved accel calibration found. Using raw accel.")
+    else:
+        print(
+            f"[Accel Calib] Loaded calibration from {accel_calibration['path']} "
+            f"(method={accel_calibration['method']}, scale={accel_calibration['scale']:.6f})"
+        )
     filter = DpointFilter(dt=dt, smoothing_length=15, camera_delay=5, gravity_vector=gravity_camera)
     trajectory = []
     previous_imu_ts = None
     latest_imu_quat = None
     last_cv_rotation = None
-    camera_world_rotation = None
+    camera_world_rotation = calibrated_camera_world_rotation
 
     first_cv = True
     for i, (type, ts, reading) in enumerate(all_events):
@@ -199,12 +301,26 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
                     )
                 if camera_world_rotation is not None:
                     aligned_quat = _align_imu_quaternion_to_camera_frame(
-                        sr.quat, imu_alignment, camera_world_rotation
+                        sr.quat,
+                        imu_alignment,
+                        camera_world_rotation,
+                        imu_quat_convention,
                     )
-                    filter.update_imu_quaternion(aligned_quat)
+                    accel_camera = _align_imu_accel_to_camera_frame(
+                        correct_accel(sr.accel, accel_calibration),
+                        sr.quat,
+                        camera_world_rotation,
+                        imu_quat_convention,
+                    )
+                    filter.update_imu_quaternion(
+                        aligned_quat,
+                        accel_camera=accel_camera,
+                        timestamp=ts,
+                    )
             else:
                 mag = None if sr.mag is None else imu_alignment @ sr.mag
-                filter.update_imu(imu_alignment @ sr.accel, imu_alignment @ sr.gyro, mag)
+                corrected_accel = correct_accel(sr.accel, accel_calibration)
+                filter.update_imu(imu_alignment @ corrected_accel, imu_alignment @ sr.gyro, mag, timestamp=ts)
             previous_imu_ts = ts
             
             # If we haven't seen CV yet, we can't initialize position
@@ -215,12 +331,13 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
             if mode != "cv_only":
                 center = filter.fs.state[fc.i_pos]
                 q = Quaternion(filter.fs.state[fc.i_quat])
-                tip = center + q.rotation_matrix @ CENTER_TO_TIP_BODY
+                tip = center + q.rotation_matrix @ center_to_tip_body
                 trajectory.append({"t": ts, "x": tip[0], "y": tip[1], "z": tip[2]})
         elif type == "CV":
             # CV reading contains dodecahedron center position
             center_pos = np.array(reading["center_pos_cam"])
-            r_cam = np.array(reading["R_cam"])
+            r_cam_dodeca = np.array(reading["R_cam"])
+            r_cam = r_cam_dodeca @ dodeca_from_body
             last_cv_rotation = r_cam
             q_cam = Quaternion(matrix=r_cam).elements
             
@@ -235,7 +352,7 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
                     )
                 first_cv = False
                 # Append first point
-                tip = center_pos + r_cam @ CENTER_TO_TIP_BODY
+                tip = center_pos + r_cam @ center_to_tip_body
                 trajectory.append({"t": ts, "x": tip[0], "y": tip[1], "z": tip[2]})
                 continue
             
@@ -244,7 +361,7 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
                 filter.fs = fc.FilterState(initial_state(center_pos, q_cam).state, filter.fs.statecov)
                 filter.observe_camera_pose(center_pos, ts)
                 # Calculate tip from center and rotation
-                tip = center_pos + r_cam @ CENTER_TO_TIP_BODY
+                tip = center_pos + r_cam @ center_to_tip_body
                 trajectory.append({"t": ts, "x": tip[0], "y": tip[1], "z": tip[2]})
             elif mode == "standard":
                 # Standard mode uses the custom 7D fuse
@@ -253,7 +370,7 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
                 # Add trajectory point after fusion
                 center = filter.fs.state[fc.i_pos]
                 q = Quaternion(filter.fs.state[fc.i_quat])
-                tip = center + q.rotation_matrix @ CENTER_TO_TIP_BODY
+                tip = center + q.rotation_matrix @ center_to_tip_body
                 trajectory.append({"t": ts, "x": tip[0], "y": tip[1], "z": tip[2]})
             else:
                 # Decoupled mode uses update_camera
@@ -261,7 +378,7 @@ def run_workflow(input_file, mode="decoupled", calibration_path=None):
                 # Add trajectory point after update
                 center = filter.fs.state[fc.i_pos]
                 q = Quaternion(filter.fs.state[fc.i_quat])
-                tip = center + q.rotation_matrix @ CENTER_TO_TIP_BODY
+                tip = center + q.rotation_matrix @ center_to_tip_body
                 trajectory.append({"t": ts, "x": tip[0], "y": tip[1], "z": tip[2]})
 
     # Restore original functions if modified
@@ -338,7 +455,43 @@ def visualize(results_dict, output_path):
 
     plt.tight_layout()
     plt.savefig(output_path)
+    plt.close(fig)
     print(f"Comparison plot saved to {output_path}")
+
+
+def show_interactive_3d(results_dict):
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    plot_styles = {
+        "CV Only (Raw)": {"alpha": 0.8, "linewidth": 2.0, "color": "blue", "linestyle": ":", "zorder": 1},
+        "Standard EKF (Coupled)": {"alpha": 0.8, "linewidth": 2.0, "color": "orange", "linestyle": "-", "zorder": 2},
+        "Decoupled EKF (Proposed)": {"alpha": 0.9, "linewidth": 2.5, "color": "green", "linestyle": "-", "zorder": 3},
+    }
+
+    for name, df in results_dict.items():
+        if df.empty:
+            continue
+        ax.plot(df["x"], df["y"], df["z"], label=name, **plot_styles.get(name, {}))
+        ax.scatter(
+            df["x"].iloc[0],
+            df["y"].iloc[0],
+            df["z"].iloc[0],
+            color=plot_styles.get(name, {}).get("color", None),
+            marker="o",
+            s=35,
+        )
+
+    ax.set_title("Interactive 3D Pen-Tip Trajectory")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+    ax.legend()
+    ax.grid(True)
+    ax.view_init(elev=20, azim=-60)
+    plt.tight_layout()
+    print("Opening interactive 3D plot. Drag to rotate, scroll to zoom, close the window to finish.")
+    plt.show()
 
 if __name__ == "__main__":
     import argparse
@@ -350,19 +503,50 @@ if __name__ == "__main__":
         default=None,
         help=f"Path to IMU alignment calibration JSON. Defaults to {DEFAULT_ALIGNMENT_PATH}",
     )
+    parser.add_argument(
+        "--camera-world-calibration",
+        default=None,
+        help=(
+            "Path to camera_from_world calibration JSON. "
+            f"Defaults to {DEFAULT_CAMERA_WORLD_PATH}"
+        ),
+    )
+    parser.add_argument(
+        "--accel-calibration",
+        default=None,
+        help=f"Path to accelerometer bias/scale calibration JSON. Defaults to {DEFAULT_ACCEL_CALIBRATION_PATH}",
+    )
     args = parser.parse_args()
 
     data_file = args.data_file
     print(f"Using data file: {data_file}")
     
     print("Running CV Only workflow...")
-    df_cv = run_workflow(data_file, mode="cv_only", calibration_path=args.imu_calibration)
+    df_cv = run_workflow(
+        data_file,
+        mode="cv_only",
+        calibration_path=args.imu_calibration,
+        camera_world_calibration_path=args.camera_world_calibration,
+        accel_calibration_path=args.accel_calibration,
+    )
     
     print("Running Standard EKF workflow...")
-    df_std = run_workflow(data_file, mode="standard", calibration_path=args.imu_calibration)
+    df_std = run_workflow(
+        data_file,
+        mode="standard",
+        calibration_path=args.imu_calibration,
+        camera_world_calibration_path=args.camera_world_calibration,
+        accel_calibration_path=args.accel_calibration,
+    )
     
     print("Running Decoupled EKF workflow...")
-    df_dec = run_workflow(data_file, mode="decoupled", calibration_path=args.imu_calibration)
+    df_dec = run_workflow(
+        data_file,
+        mode="decoupled",
+        calibration_path=args.imu_calibration,
+        camera_world_calibration_path=args.camera_world_calibration,
+        accel_calibration_path=args.accel_calibration,
+    )
     
     results = {
         "CV Only (Raw)": df_cv,
@@ -384,3 +568,4 @@ if __name__ == "__main__":
             sorted_results[k] = results[k]
     
     visualize(sorted_results, str(Path(__file__).resolve().parent / "outputs" / "workflow_comparison.png"))
+    show_interactive_3d(sorted_results)

@@ -34,6 +34,7 @@ class HistoryItem(NamedTuple):
     updated_statecov: Mat
     predicted_state: Mat
     predicted_statecov: Mat
+    timestamp: Optional[float] = None
     accel: Optional[Mat] = None
     gyro: Optional[Mat] = None
     mag: Optional[Mat] = None
