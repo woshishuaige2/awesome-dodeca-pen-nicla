@@ -19,24 +19,29 @@ Separate recording from processing:
 
 ### Step 1: Record IMU Data and Video
 
-Use the new `record_imu_and_video.py` script:
+Use `record_raw_data_filtered.py` to record the IMU stream and raw video.
 
 ```bash
 cd Code/IMU
-python record_imu_and_video.py --output outputs/recording --camera 0
+python record_raw_data_filtered.py --transport usb --port COM6 --imu outputs/recording/imu_data.json --video outputs/recording/video.mp4 --camera 0
 ```
 
 **What it does:**
-- Records IMU data from BLE device
+- Records IMU data from the Nicla USB serial stream
 - Records raw video from camera (no CV processing)
 - Saves to separate files:
   - `outputs/recording/imu_data.json` - IMU readings
   - `outputs/recording/video.mp4` - Raw video
-  - `outputs/recording/metadata.json` - Recording metadata
 
 **When to stop:**
 - Press `Ctrl+C` when finished recording
 - Recommended: Record 10-15 seconds of pen movement
+
+For BLE instead of USB, omit the USB options:
+
+```bash
+python record_raw_data_filtered.py --transport ble --imu outputs/recording/imu_data.json --video outputs/recording/video.mp4 --camera 0
+```
 
 ### Step 2: Process Video to Extract CV Data
 
@@ -124,7 +129,7 @@ Once this file exists, `compare_workflows.py` can use IMU orientation immediatel
 cd /path/to/awesome-dodeca-pen/Code/IMU
 
 # Step 1: Record (press Ctrl+C to stop)
-python record_imu_and_video.py --output outputs/recording
+python record_raw_data_filtered.py --transport usb --port COM6 --imu outputs/recording/imu_data.json --video outputs/recording/video.mp4
 
 # Step 2: Process video
 python process_video_to_cv_data.py outputs/recording/video.mp4 --output outputs/recording/cv_data.json
@@ -167,7 +172,7 @@ If trajectories don't align properly:
 ### Video Quality Issues
 
 If video quality is poor:
-- Increase camera resolution in `record_imu_and_video.py`
+- Increase camera resolution in `record_raw_data_filtered.py`
 - Improve lighting conditions
 - Use a higher quality camera
 - Reduce camera auto-exposure/auto-focus
@@ -180,7 +185,6 @@ outputs/
 │   ├── imu_data.json      # Raw IMU readings
 │   ├── video.mp4          # Raw video recording
 │   ├── cv_data.json       # Processed CV readings
-│   └── metadata.json      # Recording metadata
 ├── my_data.json           # Merged IMU + CV data
 └── comparison.png         # Analysis visualization
 ```
@@ -195,7 +199,7 @@ python compare_workflows.py outputs/my_data.json
 
 **New workflow:**
 ```bash
-python record_imu_and_video.py --output outputs/recording
+python record_raw_data_filtered.py --transport usb --port COM6 --imu outputs/recording/imu_data.json --video outputs/recording/video.mp4
 python process_video_to_cv_data.py outputs/recording/video.mp4 --output outputs/recording/cv_data.json
 python merge_imu_cv_data.py outputs/recording/imu_data.json outputs/recording/cv_data.json --output outputs/my_data.json
 python compare_workflows.py outputs/my_data.json

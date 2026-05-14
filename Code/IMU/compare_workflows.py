@@ -224,6 +224,10 @@ def run_workflow(
         all_events.append(("CV", r["local_timestamp"], r))
 
     all_events.sort(key=lambda x: x[1])
+    last_cv_timestamp = max(
+        (float(r["local_timestamp"]) for r in cv_readings),
+        default=None,
+    )
 
     # Configuration for different modes
     original_camera_measurement = fc.camera_measurement
@@ -263,6 +267,7 @@ def run_workflow(
     camera_world_calibration = _resolve_camera_world_calibration(
         camera_world_calibration_path
     )
+    bridge_gravity_vector = gravity_camera
     if camera_world_calibration is None:
         calibrated_camera_world_rotation = None
         imu_quat_convention = "world_from_imu"
@@ -272,6 +277,10 @@ def run_workflow(
             "imu_quat_convention",
             "world_from_imu",
         )
+        bridge_gravity_vector = (
+            calibrated_camera_world_rotation
+            @ np.array([0.0, 0.0, np.linalg.norm(gravity_camera)], dtype=float)
+        )
     accel_calibration = load_accel_calibration(accel_calibration_path)
     if accel_calibration["path"] is None:
         print("[Accel Calib] No saved accel calibration found. Using raw accel.")
@@ -280,7 +289,7 @@ def run_workflow(
             f"[Accel Calib] Loaded calibration from {accel_calibration['path']} "
             f"(method={accel_calibration['method']}, scale={accel_calibration['scale']:.6f})"
         )
-    filter = DpointFilter(dt=dt, smoothing_length=15, camera_delay=5, gravity_vector=gravity_camera)
+    filter = DpointFilter(dt=dt, smoothing_length=15, camera_delay=5, gravity_vector=bridge_gravity_vector)
     trajectory = []
     previous_imu_ts = None
     latest_imu_quat = None
@@ -290,6 +299,8 @@ def run_workflow(
     first_cv = True
     for i, (type, ts, reading) in enumerate(all_events):
         if type == "IMU":
+            if last_cv_timestamp is not None and ts > last_cv_timestamp:
+                continue
             imu_dt = None if previous_imu_ts is None else (ts - previous_imu_ts)
             _update_filter_dt(filter, imu_dt, dt)
             sr = StylusReading.from_json(reading)
@@ -298,6 +309,10 @@ def run_workflow(
                 if camera_world_rotation is None and last_cv_rotation is not None:
                     camera_world_rotation = _compute_camera_world_rotation(
                         sr.quat, imu_alignment, last_cv_rotation
+                    )
+                    filter.gravity_vector = (
+                        camera_world_rotation
+                        @ np.array([0.0, 0.0, np.linalg.norm(gravity_camera)], dtype=float)
                     )
                 if camera_world_rotation is not None:
                     aligned_quat = _align_imu_quaternion_to_camera_frame(

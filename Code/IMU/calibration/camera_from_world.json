@@ -1,26 +1,26 @@
 {
   "camera_from_world": [
     [
-      0.06746832867858824,
-      -0.982642965695681,
-      0.17280285470475865
+      -0.8665439382906912,
+      -0.4968721221824875,
+      0.04711366266306827
     ],
     [
-      -0.03754213558339181,
-      -0.17557516765925463,
-      -0.9837499420875522
+      -0.10278473529983884,
+      0.08528538722256726,
+      -0.991040716073582
     ],
     [
-      0.9970148507826528,
-      0.059884576229781994,
-      -0.04873627856764634
+      0.4884023968010397,
+      -0.8636228904586581,
+      -0.1249744048788862
     ]
   ],
   "quaternion_wxyz": [
-    0.4591178722429805,
-    0.5682824506584488,
-    -0.44880195583068794,
-    0.5146286429098704
+    -0.15310702470248513,
+    -0.20805352638541572,
+    0.7205559885241648,
+    -0.6434835169196718
   ],
   "method": "stationary_cv_imu_rotation_average",
   "imu_quat_convention": "world_from_imu",
@@ -28,50 +28,50 @@
   "dodeca_body_path": "C:\\Users\\china\\Documents\\GitHub\\awesome-dodeca-pen-nicla\\Code\\IMU\\calibration\\dodeca_to_body.json",
   "dodeca_body_method": "creo_parametric_cv_coord_to_pen_body_transform",
   "max_pair_dt_ms": 40.0,
-  "sample_count": 658,
-  "mean_error_deg": 47.58430571664062,
-  "median_error_deg": 32.090422121025185,
-  "p95_error_deg": 96.70071204061905,
-  "max_error_deg": 97.3004651034927,
+  "sample_count": 689,
+  "mean_error_deg": 5.207554211691453,
+  "median_error_deg": 4.985320417973326,
+  "p95_error_deg": 6.008468796717298,
+  "max_error_deg": 12.965260398047457,
   "recordings": [
     {
       "path": "outputs\\calib_pose_1.json",
-      "imu_count": 438,
-      "cv_count": 192,
-      "paired_count": 191,
-      "mean_pair_dt_ms": 3.93280977238232,
-      "max_pair_dt_ms": 14.499999954296072,
-      "camera_from_world_mean_error_deg": 1.5660494771213689,
-      "camera_from_world_p95_error_deg": 2.9122365080877177,
-      "camera_from_world_max_error_deg": 3.9495489272338475,
-      "cv_rotation_p95_error_deg": 2.9468474916400385,
-      "imu_rotation_p95_error_deg": 0.050675147093478805
+      "imu_count": 643,
+      "cv_count": 268,
+      "paired_count": 267,
+      "mean_pair_dt_ms": 4.0368289630266885,
+      "max_pair_dt_ms": 15.833333275281802,
+      "camera_from_world_mean_error_deg": 0.20067453548804629,
+      "camera_from_world_p95_error_deg": 0.48273378213059465,
+      "camera_from_world_max_error_deg": 0.7001610111945221,
+      "cv_rotation_p95_error_deg": 0.48522929422643346,
+      "imu_rotation_p95_error_deg": 0.019824110415798134
     },
     {
       "path": "outputs\\calib_pose_2.json",
-      "imu_count": 458,
-      "cv_count": 255,
-      "paired_count": 199,
-      "mean_pair_dt_ms": 3.9681742051452513,
-      "max_pair_dt_ms": 18.666666641365737,
-      "camera_from_world_mean_error_deg": 0.3019995667939503,
-      "camera_from_world_p95_error_deg": 0.5936242634665675,
-      "camera_from_world_max_error_deg": 2.0191660160640614,
-      "cv_rotation_p95_error_deg": 0.5945884970459087,
-      "imu_rotation_p95_error_deg": 0.02522571122172789
+      "imu_count": 476,
+      "cv_count": 193,
+      "paired_count": 192,
+      "mean_pair_dt_ms": 4.065972222431806,
+      "max_pair_dt_ms": 30.83333335257521,
+      "camera_from_world_mean_error_deg": 1.7573491761840792,
+      "camera_from_world_p95_error_deg": 4.343038342801541,
+      "camera_from_world_max_error_deg": 10.966076067332827,
+      "cv_rotation_p95_error_deg": 4.162787544802867,
+      "imu_rotation_p95_error_deg": 2.4078592281470104
     },
     {
       "path": "outputs\\calib_pose_3.json",
-      "imu_count": 691,
-      "cv_count": 269,
-      "paired_count": 268,
-      "mean_pair_dt_ms": 3.9962686571216324,
-      "max_pair_dt_ms": 31.83333335800853,
-      "camera_from_world_mean_error_deg": 2.1021947657717437,
-      "camera_from_world_p95_error_deg": 3.6555207102526,
-      "camera_from_world_max_error_deg": 4.256184872239743,
-      "cv_rotation_p95_error_deg": 3.657482480683029,
-      "imu_rotation_p95_error_deg": 0.018399620111709078
+      "imu_count": 535,
+      "cv_count": 231,
+      "paired_count": 230,
+      "mean_pair_dt_ms": 4.226086953541079,
+      "max_pair_dt_ms": 31.833333388874507,
+      "camera_from_world_mean_error_deg": 0.8313204297809459,
+      "camera_from_world_p95_error_deg": 1.64536787164196,
+      "camera_from_world_max_error_deg": 2.1059795020865177,
+      "cv_rotation_p95_error_deg": 1.6438373330107166,
+      "imu_rotation_p95_error_deg": 0.02966107104831137
     }
   ]
 }
