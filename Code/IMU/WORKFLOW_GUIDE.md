@@ -12,8 +12,9 @@ Separate recording from processing:
 1. **Record** IMU data + raw video (no CV processing)
 2. **Process** video offline using proven CV pipeline
 3. **Merge** IMU and CV data with proper synchronization
-4. **Calibrate camera-to-world alignment** if the camera angle changed
-5. **Analyze** using existing `compare_workflows.py`
+4. **Calibrate fixed IMU/CV body-frame bias** from varied stationary poses
+5. **Calibrate camera-to-world alignment** if the camera angle changed
+6. **Analyze** using existing `compare_workflows.py`
 
 ## New Workflow
 
@@ -79,7 +80,28 @@ python merge_imu_cv_data.py outputs/recording/imu_data.json outputs/recording/cv
 - `--sync first_detection` (default) - Align at first CV marker detection
 - `--sync manual --offset X.X` - Manual offset in seconds (CV - IMU)
 
-### Step 4: Calibrate Fixed Camera-to-World Alignment
+### Step 4: Calibrate Fixed IMU/CV Body-Frame Bias
+
+If multiple stationary pose recordings are available, estimate the remaining fixed rotation bias between the IMU-derived body frame and the CV-derived body frame:
+
+```bash
+cd Code/IMU
+python calibrate_imu_cv_bias.py outputs/calib_pose_1.json outputs/calib_pose_2.json outputs/calib_pose_3.json
+```
+
+**What it does:**
+- Computes one representative CV and IMU orientation for each stationary pose
+- Compares relative pose changes, such as pose 1 to pose 2
+- Fits one fixed body-frame bias `B` in `cam_from_body = camera_from_world @ world_from_body @ B`
+- Saves the calibration to `calibration/imu_cv_bias.json`
+
+**Recommended calibration data:**
+- Use at least three stationary poses
+- Make the orientations clearly different
+- Include rotations around different axes
+- Keep the physical IMU/dodeca mounting unchanged after calibration
+
+### Step 5: Calibrate Fixed Camera-to-World Alignment
 
 For a fixed camera setup, estimate `camera_from_world` from one or more stationary merged recordings:
 
@@ -90,9 +112,10 @@ python calibrate_camera_world.py outputs/my_data.json
 
 **What it does:**
 - Pairs each CV frame with the nearest IMU quaternion
-- Computes `camera_from_world = R_cam @ world_from_body.T`
+- Computes `camera_from_world = R_cam @ B.T @ world_from_body.T`
 - Averages the rotation estimates
 - Saves the calibration to `calibration/camera_from_world.json`
+- Automatically loads `calibration/imu_cv_bias.json` if it exists
 
 **Recommended calibration data:**
 - Record a few stationary batches
@@ -101,7 +124,15 @@ python calibrate_camera_world.py outputs/my_data.json
 - Keep the camera fixed after calibration
 - Recalibrate if the camera angle changes
 
-### Step 5: Analyze Results
+**Debugging large camera calibration residuals:**
+- The expected rotation chain is `camera_from_world = camera_from_body @ body_from_world`.
+- `camera_from_body = camera_from_dodeca @ dodeca_from_body`, where `camera_from_dodeca` is the CV rotation `R_cam`.
+- `world_from_body = world_from_imu @ imu_to_body.T`, so `body_from_world = world_from_body.T`.
+- `imu_to_body` and `dodeca_from_body` are fixed CAD-measured transforms. If they are correct and used with the right direction/order, clean stationary poses should imply nearly the same `camera_from_world` even when `imu_cv_bias` is identity.
+- `imu_cv_bias` is intended as a remaining fixed correction after the CAD transforms and camera mapping are trustworthy. It should not be used to hide a large axis-convention, transpose, or multiplication-order issue while debugging camera calibration.
+- If each stationary pose has low internal spread but the combined `camera_from_world` residual is large, the likely cause is an upstream convention mismatch: an inverted fixed transform, wrong multiplication side, quaternion convention issue, CV orientation-frame mismatch, or one pose file with hidden data association problems.
+
+### Step 6: Analyze Results
 
 Use the existing `compare_workflows.py`:
 
@@ -118,6 +149,7 @@ python compare_workflows.py outputs/my_data.json
 - Saves visualization to `outputs/comparison.png`
 - Automatically loads `calibration/imu_to_body.json` if it exists
 - Automatically loads `calibration/dodeca_to_body.json` if it exists
+- Automatically loads `calibration/imu_cv_bias.json` if it exists
 - Automatically loads `calibration/camera_from_world.json` if it exists
 
 Once this file exists, `compare_workflows.py` can use IMU orientation immediately without waiting for the first CV orientation to initialize `camera_from_world`.
@@ -137,10 +169,13 @@ python process_video_to_cv_data.py outputs/recording/video.mp4 --output outputs/
 # Step 3: Merge data
 python merge_imu_cv_data.py outputs/recording/imu_data.json outputs/recording/cv_data.json --output outputs/my_data.json
 
-# Step 4: Calibrate fixed camera alignment
+# Step 4: Calibrate fixed IMU/CV body-frame bias
+python calibrate_imu_cv_bias.py outputs/calib_pose_1.json outputs/calib_pose_2.json outputs/calib_pose_3.json
+
+# Step 5: Calibrate fixed camera alignment
 python calibrate_camera_world.py outputs/my_data.json
 
-# Step 5: Analyze
+# Step 6: Analyze
 python compare_workflows.py outputs/my_data.json
 ```
 

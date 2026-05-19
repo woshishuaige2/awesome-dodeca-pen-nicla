@@ -1,19 +1,19 @@
 {
   "rotation_matrix": [
     [
+      0.999832,
       0.0,
-      1.0,
-      0.0
+      -0.0183172
     ],
     [
+      0.0,
       -1.0,
-      0.0,
       0.0
     ],
     [
+      -0.0183172,
       0.0,
-      0.0,
-      1.0
+      -0.999832
     ]
   ],
   "gravity_camera": [
@@ -22,22 +22,22 @@
     9.81
   ],
   "quaternion_wxyz": [
-    -0.7071067811865475,
     0.0,
+    0.9999580556153607,
     0.0,
-    0.7071067811865475
+    -0.009158985202915887
   ],
-  "method": "creo_parametric_transform_with_yz_axis_correction",
+  "method": "creo_parametric_imu_axes_to_body_transform",
   "observable_axes": 3,
   "source": {
-    "reference_from": "PRT_CSYS_DEF:F4(CSYS):NICLA_BOARD",
-    "reference_to": "DEFAULT_CSYS:F1(CSYS):06_DODECA_STYLUS_HALF",
+    "reference_from": "IMU_AXES:F9(CSYS):NICLA_BOARD",
+    "reference_to": "PRT_CSYS_DEF:F4(CSYS):07_D_RING",
     "translation_ignored_mm": [
-      28.32,
-      11.4296,
+      -0.000388764,
+      29.19,
       0.0
     ],
-    "axis_correction": "Applied a valid right-handed correction diag(1, -1, -1) for the true IMU axis convention relative to the Creo NICLA_BOARD frame.",
-    "note": "Only the rotation part is used for imu_to_body. A single-axis Z flip would be a reflection, so the Z sign correction is paired with Y to keep determinant +1."
+    "axis_correction": "None. Uses the updated Creo IMU_AXES-to-body transform after remodeling the axes coordinate.",
+    "note": "Only the rotation part is used for imu_to_body."
   }
 }

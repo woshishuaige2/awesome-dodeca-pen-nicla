@@ -6,6 +6,7 @@ import numpy as np
 from app.camera_world_calibration import (
     DEFAULT_CAMERA_WORLD_PATH,
     DEFAULT_DODECA_BODY_PATH,
+    DEFAULT_IMU_CV_BIAS_PATH,
     estimate_camera_world_from_recordings,
     save_camera_world_calibration,
 )
@@ -40,6 +41,14 @@ def main():
         help="Path to the dodeca-to-pen-body calibration JSON.",
     )
     parser.add_argument(
+        "--imu-cv-bias",
+        default=str(DEFAULT_IMU_CV_BIAS_PATH),
+        help=(
+            "Path to the fixed IMU/CV body-frame bias JSON. "
+            "If absent, identity bias is used."
+        ),
+    )
+    parser.add_argument(
         "--max-pair-dt-ms",
         type=float,
         default=40.0,
@@ -72,6 +81,7 @@ def main():
                 dodeca_body_path=args.dodeca_body,
                 max_pair_dt_s=args.max_pair_dt_ms / 1000.0,
                 imu_quat_convention=convention,
+                imu_cv_bias_path=args.imu_cv_bias,
             )
             print(
                 f"{convention}: "
@@ -81,10 +91,14 @@ def main():
                 f"max={result['max_error_deg']:.3f} deg"
             )
             for recording in result["recordings"]:
+                euler = recording["camera_from_world_euler_xyz_deg"]
                 print(
                     f"  - {recording['path']}: "
+                    f"euler xyz=({euler[0]:.3f}, {euler[1]:.3f}, {euler[2]:.3f}) deg, "
+                    f"angle={recording['camera_from_world_angle_deg']:.3f} deg, "
                     f"p95={recording['camera_from_world_p95_error_deg']:.3f} deg, "
-                    f"pairs={recording['paired_count']}"
+                    f"pairs={recording['paired_count']}, "
+                    f"quaternion_wxyz={recording['camera_from_world_quaternion_wxyz']}"
                 )
         return
 
@@ -94,6 +108,7 @@ def main():
         dodeca_body_path=args.dodeca_body,
         max_pair_dt_s=args.max_pair_dt_ms / 1000.0,
         imu_quat_convention=args.imu_quat_convention,
+        imu_cv_bias_path=args.imu_cv_bias,
     )
     save_camera_world_calibration(result, args.output)
 
@@ -103,6 +118,11 @@ def main():
     print(f"Method: {result['method']}")
     print(f"IMU quaternion convention: {result['imu_quat_convention']}")
     print(f"Dodeca/body calibration: {result['dodeca_body_path']}")
+    print(
+        "IMU/CV body bias: "
+        f"{result['imu_cv_bias_path'] or 'identity'} "
+        f"(method={result['imu_cv_bias_method']})"
+    )
     print(f"Samples used: {result['sample_count']}")
     print(
         "Residual spread: "
@@ -117,10 +137,15 @@ def main():
 
     print("\nRecordings:")
     for recording in result["recordings"]:
+        euler = recording["camera_from_world_euler_xyz_deg"]
         print(
             f"- {recording['path']}: pairs={recording['paired_count']}, "
             f"mean dt={recording['mean_pair_dt_ms']:.1f} ms, "
-            f"p95 spread={recording['camera_from_world_p95_error_deg']:.3f} deg"
+            f"euler xyz=({euler[0]:.3f}, {euler[1]:.3f}, {euler[2]:.3f}) deg, "
+            f"angle={recording['camera_from_world_angle_deg']:.3f} deg, "
+            f"p95 spread={recording['camera_from_world_p95_error_deg']:.3f} deg, "
+            f"quaternion_wxyz={recording['camera_from_world_quaternion_wxyz']}"
+
         )
 
 

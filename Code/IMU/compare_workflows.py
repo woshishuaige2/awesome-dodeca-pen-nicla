@@ -23,8 +23,10 @@ from app.imu_alignment import (
 )
 from app.camera_world_calibration import (
     DEFAULT_CAMERA_WORLD_PATH,
+    DEFAULT_IMU_CV_BIAS_PATH,
     load_dodeca_body_calibration,
     load_camera_world_calibration,
+    load_imu_cv_bias,
 )
 from app.monitor_ble import StylusReading
 from app.dodeca_bridge import CENTER_TO_TIP_BODY
@@ -33,8 +35,18 @@ import app.filter_core as fc
 DEFAULT_DT = 1.0 / 60.0
 
 
+def _as_rotation_matrix(matrix):
+    matrix = np.asarray(matrix, dtype=float)
+    u, _, vt = np.linalg.svd(matrix)
+    rotation = u @ vt
+    if np.linalg.det(rotation) < 0:
+        u[:, -1] *= -1
+        rotation = u @ vt
+    return rotation
+
+
 def _rotation_matrix_to_quaternion(rotation_matrix):
-    return Quaternion(matrix=rotation_matrix).elements
+    return Quaternion(matrix=_as_rotation_matrix(rotation_matrix)).elements
 
 
 def _world_from_imu_rotation(imu_quat, convention="world_from_imu"):
@@ -46,7 +58,13 @@ def _world_from_imu_rotation(imu_quat, convention="world_from_imu"):
     raise ValueError(f"Unknown IMU quaternion convention: {convention}")
 
 
-def _compute_camera_world_rotation(imu_quat, imu_to_body, camera_rotation):
+def _compute_camera_world_rotation(
+    imu_quat,
+    imu_to_body,
+    camera_rotation,
+    imu_cv_bias=None,
+    imu_quat_convention="world_from_imu",
+):
     """
     Bridge the Nicla fused orientation frame into the camera frame.
 
@@ -58,9 +76,10 @@ def _compute_camera_world_rotation(imu_quat, imu_to_body, camera_rotation):
     This bridge is only as accurate as the current imu_to_body calibration and
     should be revisited after the CAD/mechanical update for the Nicla mount.
     """
-    world_from_imu = _world_from_imu_rotation(imu_quat)
+    world_from_imu = _world_from_imu_rotation(imu_quat, imu_quat_convention)
     world_from_body = world_from_imu @ imu_to_body.T
-    return camera_rotation @ world_from_body.T
+    bias = np.eye(3) if imu_cv_bias is None else np.asarray(imu_cv_bias, dtype=float)
+    return _as_rotation_matrix(camera_rotation @ bias.T @ world_from_body.T)
 
 
 def _align_imu_quaternion_to_camera_frame(
@@ -68,10 +87,12 @@ def _align_imu_quaternion_to_camera_frame(
     imu_to_body,
     camera_world_rotation,
     imu_quat_convention="world_from_imu",
+    imu_cv_bias=None,
 ):
     world_from_imu = _world_from_imu_rotation(imu_quat, imu_quat_convention)
     world_from_body = world_from_imu @ imu_to_body.T
-    camera_from_body = camera_world_rotation @ world_from_body
+    bias = np.eye(3) if imu_cv_bias is None else np.asarray(imu_cv_bias, dtype=float)
+    camera_from_body = _as_rotation_matrix(camera_world_rotation @ world_from_body @ bias)
     return _rotation_matrix_to_quaternion(camera_from_body)
 
 
@@ -178,6 +199,30 @@ def _resolve_camera_world_calibration(calibration_path=None):
     return None
 
 
+def _resolve_imu_cv_bias(bias_path=None):
+    candidate_paths = []
+    if bias_path:
+        candidate_paths.append(Path(bias_path))
+    candidate_paths.append(DEFAULT_IMU_CV_BIAS_PATH)
+
+    seen_paths = set()
+    for path in candidate_paths:
+        if str(path) in seen_paths:
+            continue
+        seen_paths.add(str(path))
+        calibration = load_imu_cv_bias(path)
+        if calibration["path"] is not None:
+            print(
+                f"[IMU/CV Bias] Loaded calibration from {calibration['path']} "
+                f"(angle={calibration['angle_deg']:.3f} deg, "
+                f"euler_xyz={np.array2string(calibration['euler_xyz_deg'], precision=3)})"
+            )
+            return calibration
+
+    print("[IMU/CV Bias] No saved bias calibration found. Using identity.")
+    return load_imu_cv_bias(Path("__missing_imu_cv_bias_identity__.json"))
+
+
 def _resolve_dodeca_body_calibration():
     calibration = load_dodeca_body_calibration()
     if calibration["path"] is None:
@@ -196,6 +241,7 @@ def run_workflow(
     calibration_path=None,
     camera_world_calibration_path=None,
     accel_calibration_path=None,
+    imu_cv_bias_path=None,
 ):
     """
     Modes: 
@@ -267,6 +313,8 @@ def run_workflow(
     camera_world_calibration = _resolve_camera_world_calibration(
         camera_world_calibration_path
     )
+    imu_cv_bias = _resolve_imu_cv_bias(imu_cv_bias_path)
+    imu_cv_bias_rotation = imu_cv_bias["rotation_matrix"]
     bridge_gravity_vector = gravity_camera
     if camera_world_calibration is None:
         calibrated_camera_world_rotation = None
@@ -308,7 +356,11 @@ def run_workflow(
                 latest_imu_quat = sr.quat
                 if camera_world_rotation is None and last_cv_rotation is not None:
                     camera_world_rotation = _compute_camera_world_rotation(
-                        sr.quat, imu_alignment, last_cv_rotation
+                        sr.quat,
+                        imu_alignment,
+                        last_cv_rotation,
+                        imu_cv_bias_rotation,
+                        imu_quat_convention,
                     )
                     filter.gravity_vector = (
                         camera_world_rotation
@@ -320,6 +372,7 @@ def run_workflow(
                         imu_alignment,
                         camera_world_rotation,
                         imu_quat_convention,
+                        imu_cv_bias_rotation,
                     )
                     accel_camera = _align_imu_accel_to_camera_frame(
                         correct_accel(sr.accel, accel_calibration),
@@ -352,9 +405,9 @@ def run_workflow(
             # CV reading contains dodecahedron center position
             center_pos = np.array(reading["center_pos_cam"])
             r_cam_dodeca = np.array(reading["R_cam"])
-            r_cam = r_cam_dodeca @ dodeca_from_body
+            r_cam = _as_rotation_matrix(r_cam_dodeca @ dodeca_from_body)
             last_cv_rotation = r_cam
-            q_cam = Quaternion(matrix=r_cam).elements
+            q_cam = _rotation_matrix_to_quaternion(r_cam)
             
             if first_cv:
                 # Initialize filter with first CV reading
@@ -363,7 +416,11 @@ def run_workflow(
                 filter.last_camera_timestamp = ts
                 if latest_imu_quat is not None and camera_world_rotation is None:
                     camera_world_rotation = _compute_camera_world_rotation(
-                        latest_imu_quat, imu_alignment, r_cam
+                        latest_imu_quat,
+                        imu_alignment,
+                        r_cam,
+                        imu_cv_bias_rotation,
+                        imu_quat_convention,
                     )
                 first_cv = False
                 # Append first point
@@ -531,6 +588,14 @@ if __name__ == "__main__":
         default=None,
         help=f"Path to accelerometer bias/scale calibration JSON. Defaults to {DEFAULT_ACCEL_CALIBRATION_PATH}",
     )
+    parser.add_argument(
+        "--imu-cv-bias",
+        default=None,
+        help=(
+            "Path to IMU/CV body-frame bias JSON. "
+            f"Defaults to {DEFAULT_IMU_CV_BIAS_PATH}"
+        ),
+    )
     args = parser.parse_args()
 
     data_file = args.data_file
@@ -543,6 +608,7 @@ if __name__ == "__main__":
         calibration_path=args.imu_calibration,
         camera_world_calibration_path=args.camera_world_calibration,
         accel_calibration_path=args.accel_calibration,
+        imu_cv_bias_path=args.imu_cv_bias,
     )
     
     print("Running Standard EKF workflow...")
@@ -552,6 +618,7 @@ if __name__ == "__main__":
         calibration_path=args.imu_calibration,
         camera_world_calibration_path=args.camera_world_calibration,
         accel_calibration_path=args.accel_calibration,
+        imu_cv_bias_path=args.imu_cv_bias,
     )
     
     print("Running Decoupled EKF workflow...")
@@ -561,6 +628,7 @@ if __name__ == "__main__":
         calibration_path=args.imu_calibration,
         camera_world_calibration_path=args.camera_world_calibration,
         accel_calibration_path=args.accel_calibration,
+        imu_cv_bias_path=args.imu_cv_bias,
     )
     
     results = {
